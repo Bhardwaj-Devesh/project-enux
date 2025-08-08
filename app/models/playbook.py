@@ -99,3 +99,33 @@ class UserPlaybookResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+class PlaybookFileCreate(BaseModel):
+    playbook_id: str = Field(..., description="UUID of the playbook")
+    file_name: str = Field(..., min_length=1, max_length=255, description="Name of the file")
+    file_type: str = Field(..., description="Type of file (md, pdf, csv, docx, txt)")
+    storage_path: str = Field(..., description="Path to file in storage")
+    tags: Optional[List[str]] = Field(default_factory=list)
+    uploaded_by: Optional[str] = Field(None, description="UUID of user who uploaded the file")
+
+
+class PlaybookFileResponse(BaseModel):
+    id: str
+    playbook_id: str
+    file_name: str
+    file_type: str
+    storage_path: str
+    tags: List[str]
+    uploaded_by: Optional[str]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class PlaybookFileUpdate(BaseModel):
+    file_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    file_type: Optional[str] = None
+    storage_path: Optional[str] = None
+    tags: Optional[List[str]] = None

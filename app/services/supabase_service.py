@@ -220,6 +220,60 @@ class SupabaseService:
             return response.data
         except Exception as e:
             raise Exception(f"Failed to get playbook files: {str(e)}")
+    
+    async def create_playbook_file(self, playbook_file_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new playbook file entry"""
+        try:
+            file_id = str(uuid.uuid4())
+            playbook_file_data["id"] = file_id
+            playbook_file_data["created_at"] = datetime.utcnow().isoformat()
+            
+            response = self.client.table("playbook_files").insert(playbook_file_data).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to create playbook file: {str(e)}")
+    
+    async def update_playbook_file(self, file_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Update a playbook file entry"""
+        try:
+            response = self.client.table("playbook_files").update(update_data).eq("id", file_id).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to update playbook file: {str(e)}")
+    
+    async def delete_playbook_file(self, file_id: str) -> bool:
+        """Delete a playbook file entry"""
+        try:
+            response = self.client.table("playbook_files").delete().eq("id", file_id).execute()
+            return True
+        except Exception as e:
+            raise Exception(f"Failed to delete playbook file: {str(e)}")
+    
+    async def get_playbook_file(self, file_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific playbook file by ID"""
+        try:
+            response = self.client.table("playbook_files").select("*").eq("id", file_id).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to get playbook file: {str(e)}")
+    
+    async def upload_playbook_file_to_storage(self, file_content: bytes, storage_path: str, bucket: str = "playbooks") -> str:
+        """Upload a file to Supabase Storage and return the storage path"""
+        try:
+            response = self.client.storage.from_(bucket).upload(storage_path, file_content)
+            if hasattr(response, 'error') and response.error:
+                raise Exception(f"Storage upload error: {response.error}")
+            return storage_path
+        except Exception as e:
+            raise Exception(f"Failed to upload file to storage: {str(e)}")
+    
+    async def delete_file_from_storage(self, storage_path: str, bucket: str = "playbooks") -> bool:
+        """Delete a file from Supabase Storage"""
+        try:
+            response = self.client.storage.from_(bucket).remove([storage_path])
+            return True
+        except Exception as e:
+            raise Exception(f"Failed to delete file from storage: {str(e)}")
 
     async def copy_playbook_files(self, user_playbook_id: str, original_files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Copy files from original playbook to user playbook"""
