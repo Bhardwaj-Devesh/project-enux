@@ -7,15 +7,17 @@ from app.models.playbook import (
     PlaybookCreate, PlaybookResponse, PlaybookUpdate, 
     PlaybookSearch, PlaybookSearchResult, PlaybookUploadResponse,
     FileUpload, ProcessingStatus, PlaybookForkRequest, PlaybookForkResponse,
-    UserPlaybookResponse
+    UserPlaybookResponse, PlaybookFileCreate, PlaybookFileResponse, PlaybookFileUpdate
 )
 from app.models.auth import TokenData
 from app.api.dependencies import get_current_user, get_optional_user
 from app.services.supabase_service import supabase_service
 from app.services.ai_service import ai_service
 from app.services.vector_service import vector_service
+from app.services.download_service import download_service
 from app.config import settings
 import json
+import io
 
 
 router = APIRouter(prefix="/playbooks", tags=["playbooks"])
@@ -648,5 +650,511 @@ async def get_user_playbook_files(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get user playbook files: {str(e)}"
+        )
+
+
+@router.get("/{playbook_id}/download")
+async def download_original_playbook(
+    playbook_id: str,
+    current_user: Optional[TokenData] = Depends(get_optional_user)
+):
+    """Download original playbook as ZIP file"""
+    try:
+        # Get playbook information
+        playbook_info = await download_service.get_playbook_info(playbook_id, source="original")
+        
+        if not playbook_info:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # Create ZIP file
+        zip_buffer = await download_service.create_playbook_zip(
+            playbook_id=playbook_id,
+            source="original",
+            playbook_title=playbook_info.get('title', 'Unknown_Playbook')
+        )
+        
+        # Generate filename
+        filename = download_service.generate_zip_filename(
+            playbook_title=playbook_info.get('title', 'Unknown_Playbook'),
+            source="original"
+        )
+        
+        # Return ZIP file as streaming response
+        return StreamingResponse(
+            iter([zip_buffer.read()]),
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to download playbook: {str(e)}"
+        )
+
+
+@router.get("/user-playbooks/{user_playbook_id}/download")
+async def download_forked_playbook(
+    user_playbook_id: str,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """Download forked playbook as ZIP file"""
+    try:
+        # Get user playbook information
+        user_playbook_info = await download_service.get_playbook_info(user_playbook_id, source="forked")
+        
+        if not user_playbook_info:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User playbook not found"
+            )
+        
+        # Check if user owns this fork
+        if user_playbook_info.get('user_id') != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to download this playbook"
+            )
+        
+        # Get original playbook title if available
+        playbook_title = "Forked_Playbook"
+        if user_playbook_info.get('playbooks'):
+            playbook_title = user_playbook_info['playbooks'].get('title', 'Forked_Playbook')
+        elif user_playbook_info.get('original_playbook'):
+            playbook_title = user_playbook_info['original_playbook'].get('title', 'Forked_Playbook')
+        
+        # Create ZIP file
+        zip_buffer = await download_service.create_playbook_zip(
+            playbook_id=user_playbook_id,
+            source="forked",
+            playbook_title=playbook_title
+        )
+        
+        # Generate filename
+        filename = download_service.generate_zip_filename(
+            playbook_title=playbook_title,
+            source="forked"
+        )
+        
+        # Return ZIP file as streaming response
+        return StreamingResponse(
+            iter([zip_buffer.read()]),
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to download forked playbook: {str(e)}"
+        )
+
+
+@router.get("/{playbook_id}/download-info")
+async def get_download_info(
+    playbook_id: str,
+    source: str = "original",
+    current_user: Optional[TokenData] = Depends(get_optional_user)
+):
+    """Get download information for a playbook without actually downloading"""
+    try:
+        # Validate source parameter
+        if source not in ["original", "forked"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source must be 'original' or 'forked'"
+            )
+        
+        # Get playbook information
+        playbook_info = await download_service.get_playbook_info(playbook_id, source=source)
+        
+        if not playbook_info:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # For forked playbooks, check authorization
+        if source == "forked" and current_user:
+            if playbook_info.get('user_id') != current_user.user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to access this playbook"
+                )
+        
+        # Get file metadata
+        files_metadata = await download_service.get_playbook_files_metadata(playbook_id, source)
+        
+        # Calculate total size (estimate)
+        total_files = len(files_metadata)
+        
+        # Get playbook title
+        if source == "original":
+            playbook_title = playbook_info.get('title', 'Unknown_Playbook')
+        else:
+            playbook_title = "Forked_Playbook"
+            if playbook_info.get('playbooks'):
+                playbook_title = playbook_info['playbooks'].get('title', 'Forked_Playbook')
+            elif playbook_info.get('original_playbook'):
+                playbook_title = playbook_info['original_playbook'].get('title', 'Forked_Playbook')
+        
+        # Generate filename
+        filename = download_service.generate_zip_filename(playbook_title, source)
+        
+        return {
+            "playbook_id": playbook_id,
+            "source": source,
+            "title": playbook_title,
+            "total_files": total_files,
+            "estimated_filename": filename,
+            "files": [
+                {
+                    "name": f.get('file_name' if source == 'original' else 'file_path', 'Unknown'),
+                    "type": f.get('file_type', 'Unknown'),
+                    "path": f.get('storage_path', '')
+                }
+                for f in files_metadata
+            ]
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get download info: {str(e)}"
+        )
+
+
+# Playbook Files Management Endpoints
+
+@router.post("/{playbook_id}/files", response_model=PlaybookFileResponse)
+async def upload_playbook_file(
+    playbook_id: str,
+    file: UploadFile = File(...),
+    file_path: Optional[str] = Form(None),
+    tags: Optional[str] = Form("[]"),
+    current_user: Optional[TokenData] = Depends(get_optional_user)
+):
+    """Upload a file to a playbook and create the database entry"""
+    try:
+        # Verify playbook exists
+        playbook = await supabase_service.get_playbook(playbook_id)
+        if not playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # Read file content
+        file_content = await file.read()
+        
+        # Determine file type from extension, mapping to allowed database types
+        file_extension = file.filename.split('.')[-1].lower() if '.' in file.filename else 'txt'
+        
+        # Database constraint only allows: 'md', 'pdf', 'csv', 'docx', 'txt'
+        # Map other common types to txt
+        type_mapping = {
+            'md': 'md',
+            'markdown': 'md',
+            'pdf': 'pdf',
+            'csv': 'csv',
+            'docx': 'docx',
+            'doc': 'docx',  # Map doc to docx
+            'txt': 'txt',
+            'py': 'txt',    # Map Python files to txt
+            'python': 'txt',
+            'json': 'txt',  # Map JSON to txt
+            'yaml': 'txt',  # Map YAML to txt
+            'yml': 'txt',
+            'js': 'txt',    # Map JavaScript to txt
+            'html': 'txt',  # Map HTML to txt
+            'xml': 'txt',   # Map XML to txt
+            'sql': 'txt',   # Map SQL to txt
+            'sh': 'txt',    # Map shell scripts to txt
+            'cfg': 'txt',   # Map config files to txt
+            'conf': 'txt',
+            'ini': 'txt',
+            'log': 'txt'
+        }
+        
+        file_type = type_mapping.get(file_extension, 'txt')  # Default fallback to txt
+        
+        # Generate storage path
+        if file_path:
+            # Use provided file path (preserving folder structure)
+            storage_path = f"playbooks/{playbook_id}/{file_path}"
+            file_name = file_path
+        else:
+            # Use original filename
+            storage_path = f"playbooks/{playbook_id}/{file.filename}"
+            file_name = file.filename
+        
+        # Upload file to Supabase Storage
+        await supabase_service.upload_playbook_file_to_storage(
+            file_content=file_content,
+            storage_path=storage_path,
+            bucket="playbooks"
+        )
+        
+        # Parse tags
+        try:
+            import json
+            tags_list = json.loads(tags) if tags else []
+        except:
+            tags_list = []
+        
+        # Create database entry
+        file_dict = {
+            "playbook_id": playbook_id,
+            "file_name": file_name,
+            "file_type": file_type,
+            "storage_path": storage_path,
+            "tags": tags_list
+        }
+        
+        # Set uploaded_by to current user if authenticated
+        if current_user:
+            file_dict["uploaded_by"] = current_user.user_id
+        
+        # Create the playbook file entry
+        created_file = await supabase_service.create_playbook_file(file_dict)
+        
+        if not created_file:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create playbook file entry"
+            )
+        
+        return PlaybookFileResponse(**created_file)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        # If database entry failed but file was uploaded, try to clean up
+        try:
+            if 'storage_path' in locals():
+                await supabase_service.delete_file_from_storage(storage_path, "playbooks")
+        except:
+            pass  # Cleanup failed, but don't mask the original error
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload playbook file: {str(e)}"
+        )
+
+
+@router.post("/{playbook_id}/files/metadata", response_model=PlaybookFileResponse)
+async def create_playbook_file_metadata(
+    playbook_id: str,
+    file_data: PlaybookFileCreate,
+    current_user: Optional[TokenData] = Depends(get_optional_user)
+):
+    """Create a playbook file metadata entry (without uploading actual file)"""
+    try:
+        # Verify playbook exists
+        playbook = await supabase_service.get_playbook(playbook_id)
+        if not playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # Ensure the playbook_id in the request matches the URL parameter
+        file_dict = file_data.dict()
+        file_dict["playbook_id"] = playbook_id
+        
+        # Set uploaded_by to current user if authenticated
+        if current_user:
+            file_dict["uploaded_by"] = current_user.user_id
+        
+        # Create the playbook file entry
+        created_file = await supabase_service.create_playbook_file(file_dict)
+        
+        if not created_file:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create playbook file"
+            )
+        
+        return PlaybookFileResponse(**created_file)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create playbook file: {str(e)}"
+        )
+
+
+@router.get("/{playbook_id}/files", response_model=List[PlaybookFileResponse])
+async def get_playbook_files(
+    playbook_id: str,
+    current_user: Optional[TokenData] = Depends(get_optional_user)
+):
+    """Get all files for a playbook"""
+    try:
+        # Verify playbook exists
+        playbook = await supabase_service.get_playbook(playbook_id)
+        if not playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # Get playbook files
+        files = await supabase_service.get_playbook_files(playbook_id)
+        
+        return [PlaybookFileResponse(**file_data) for file_data in files]
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get playbook files: {str(e)}"
+        )
+
+
+@router.get("/{playbook_id}/files/{file_id}", response_model=PlaybookFileResponse)
+async def get_playbook_file(
+    playbook_id: str,
+    file_id: str,
+    current_user: Optional[TokenData] = Depends(get_optional_user)
+):
+    """Get a specific playbook file"""
+    try:
+        # Get the file
+        file_data = await supabase_service.get_playbook_file(file_id)
+        
+        if not file_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook file not found"
+            )
+        
+        # Verify the file belongs to the specified playbook
+        if file_data["playbook_id"] != playbook_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File does not belong to specified playbook"
+            )
+        
+        return PlaybookFileResponse(**file_data)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get playbook file: {str(e)}"
+        )
+
+
+@router.put("/{playbook_id}/files/{file_id}", response_model=PlaybookFileResponse)
+async def update_playbook_file(
+    playbook_id: str,
+    file_id: str,
+    file_update: PlaybookFileUpdate,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """Update a playbook file entry"""
+    try:
+        # Get the existing file
+        existing_file = await supabase_service.get_playbook_file(file_id)
+        
+        if not existing_file:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook file not found"
+            )
+        
+        # Verify the file belongs to the specified playbook
+        if existing_file["playbook_id"] != playbook_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File does not belong to specified playbook"
+            )
+        
+        # Get the playbook to check ownership
+        playbook = await supabase_service.get_playbook(playbook_id)
+        if playbook["owner_id"] != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to update this playbook file"
+            )
+        
+        # Update the file
+        update_data = file_update.dict(exclude_unset=True)
+        updated_file = await supabase_service.update_playbook_file(file_id, update_data)
+        
+        if not updated_file:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update playbook file"
+            )
+        
+        return PlaybookFileResponse(**updated_file)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update playbook file: {str(e)}"
+        )
+
+
+@router.delete("/{playbook_id}/files/{file_id}")
+async def delete_playbook_file(
+    playbook_id: str,
+    file_id: str,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """Delete a playbook file entry"""
+    try:
+        # Get the existing file
+        existing_file = await supabase_service.get_playbook_file(file_id)
+        
+        if not existing_file:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook file not found"
+            )
+        
+        # Verify the file belongs to the specified playbook
+        if existing_file["playbook_id"] != playbook_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File does not belong to specified playbook"
+            )
+        
+        # Get the playbook to check ownership
+        playbook = await supabase_service.get_playbook(playbook_id)
+        if playbook["owner_id"] != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to delete this playbook file"
+            )
+        
+        # Delete the file entry
+        await supabase_service.delete_playbook_file(file_id)
+        
+        return {"message": "Playbook file deleted successfully"}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete playbook file: {str(e)}"
         )
 
