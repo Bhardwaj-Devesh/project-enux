@@ -44,32 +44,30 @@ class AuthService:
     async def authenticate_user(self, email: str, password: str) -> Optional[Dict[str, Any]]:
         """Authenticate user with email and password"""
         try:
-            # Try to sign in with Supabase Auth
-            response = supabase_service.client.auth.sign_in_with_password({
-                "email": email,
-                "password": password
-            })
-            
-            if response.user:
-                return {
-                    "id": response.user.id,
-                    "email": response.user.email,
-                    "full_name": response.user.user_metadata.get("full_name", ""),
-                    "created_at": response.user.created_at
-                }
+            # Get user from database
+            user = await supabase_service.get_user_by_email(email)
+            if user:
+                # Verify password against hashed password
+                if self.verify_password(password, user.get("hashed_password", "")):
+                    return {
+                        "id": user["id"],
+                        "email": user["email"],
+                        "full_name": user.get("full_name", ""),
+                        "created_at": user.get("created_at", "")
+                    }
             return None
         except Exception as e:
-            # If Supabase auth fails, try custom authentication
-            user = await supabase_service.get_user_by_email(email)
-            if user and self.verify_password(password, user.get("hashed_password", "")):
-                return user
+            print(f"Authentication error: {str(e)}")
             return None
     
     async def register_user(self, email: str, password: str, full_name: str) -> Optional[Dict[str, Any]]:
         """Register a new user"""
         try:
-            # Create user in Supabase Auth
-            user = await supabase_service.create_user(email, password, full_name)
+            # Hash the password before storing
+            hashed_password = self.get_password_hash(password)
+            
+            # Create user in Supabase Auth and users table
+            user = await supabase_service.create_user(email, password, full_name, hashed_password)
             
             if user:
                 return {

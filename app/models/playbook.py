@@ -72,3 +72,30 @@ class ProcessingStatus(BaseModel):
     summary: Optional[str] = None
     extracted_tags: Optional[List[str]] = None
     vector_embedding: Optional[List[float]] = None 
+
+
+class PlaybookForkRequest(BaseModel):
+    playbook_id: str = Field(..., description="UUID of the playbook to fork")
+    user_id: str = Field(..., description="UUID of the user creating the fork")
+
+
+class PlaybookForkResponse(BaseModel):
+    status: str
+    new_playbook_id: str
+    new_playbook_url: str
+    message: Optional[str] = None
+
+
+class UserPlaybookResponse(BaseModel):
+    id: str
+    user_id: str
+    original_playbook_id: str
+    forked_at: datetime
+    last_updated_at: datetime
+    version: str
+    license: Optional[str]
+    status: str
+    original_playbook: Optional[PlaybookResponse] = None
+    
+    class Config:
+        from_attributes = True
