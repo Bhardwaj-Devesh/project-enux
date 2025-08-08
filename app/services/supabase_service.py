@@ -27,31 +27,45 @@ class SupabaseService:
             )
         return self._service_client
     
-    async def create_user(self, email: str, password: str, full_name: str) -> Dict[str, Any]:
-        """Create a new user in Supabase Auth"""
+    async def create_user(self, email: str, password: str, full_name: str, hashed_password: str) -> Dict[str, Any]:
+        """Create a new user in Supabase Auth and Users table"""
         try:
-            response = self.service_client.auth.admin.create_user({
+            # First create user in Supabase Auth
+            auth_response = self.service_client.auth.admin.create_user({
                 "email": email,
                 "password": password,
                 "user_metadata": {"full_name": full_name}
             })
-            return response.user
+            
+            if auth_response.user:
+                # Then create user in users table with hashed password
+                user_data = {
+                    "id": auth_response.user.id,
+                    "email": email,
+                    "full_name": full_name,
+                    "hashed_password": hashed_password,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+                
+                # Insert into users table
+                table_response = self.client.table("users").insert(user_data).execute()
+                
+                return auth_response.user
+            return None
         except Exception as e:
             raise Exception(f"Failed to create user: {str(e)}")
     
     async def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
-        """Get user by email"""
+        """Get user by email from users table"""
         try:
-            response = self.client.auth.sign_in_with_password({
-                "email": email,
-                "password": "dummy"  # We'll handle auth separately
-            })
-            return None  # This will fail, but we can get user info differently
-        except:
-            # Try to get user from users table
+            # Get user from users table
             response = self.client.table("users").select("*").eq("email", email).execute()
             if response.data:
                 return response.data[0]
+            return None
+        except Exception as e:
+            print(f"Error getting user by email: {str(e)}")
             return None
     
     async def create_playbook(self, playbook_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -171,6 +185,197 @@ class SupabaseService:
             return response
         except Exception as e:
             raise Exception(f"Failed to get file URL: {str(e)}")
+
+    async def validate_user_exists(self, user_id: str) -> bool:
+        """Validate if user exists in the database"""
+        try:
+            response = self.client.table("users").select("id").eq("id", user_id).execute()
+            return len(response.data) > 0
+        except Exception as e:
+            raise Exception(f"Failed to validate user: {str(e)}")
+
+    async def create_user_playbook_fork(self, user_id: str, original_playbook_id: str, license: Optional[str] = None) -> Dict[str, Any]:
+        """Create a new user playbook fork entry"""
+        try:
+            fork_data = {
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "original_playbook_id": original_playbook_id,
+                "forked_at": datetime.utcnow().isoformat(),
+                "last_updated_at": datetime.utcnow().isoformat(),
+                "version": "v1",
+                "license": license,
+                "status": "active"
+            }
+            
+            response = self.client.table("user_playbooks").insert(fork_data).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to create user playbook fork: {str(e)}")
+
+    async def get_playbook_files(self, playbook_id: str) -> List[Dict[str, Any]]:
+        """Get all files associated with a playbook"""
+        try:
+            response = self.client.table("playbook_files").select("*").eq("playbook_id", playbook_id).execute()
+            return response.data
+        except Exception as e:
+            raise Exception(f"Failed to get playbook files: {str(e)}")
+
+    async def copy_playbook_files(self, user_playbook_id: str, original_files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Copy files from original playbook to user playbook"""
+        try:
+            copied_files = []
+            
+            for original_file in original_files:
+                # Generate new storage path for the copied file
+                new_file_path = f"user_playbooks/{user_playbook_id}/{original_file['file_name']}"
+                
+                # Extract the actual storage path from the original file
+                # storage_path might be a full URL or just a path
+                original_storage_path = original_file['storage_path']
+                if original_storage_path.startswith('http'):
+                    # Extract path from URL: remove base URL and bucket name
+                    path_parts = original_storage_path.split('/')
+                    bucket_index = next(i for i, part in enumerate(path_parts) if part == settings.storage_bucket_name)
+                    original_storage_path = '/'.join(path_parts[bucket_index + 1:])
+                
+                # Download original file content from storage
+                try:
+                    file_content = self.client.storage.from_(settings.storage_bucket_name).download(original_storage_path)
+                except Exception as download_error:
+                    raise Exception(f"Failed to download original file {original_storage_path}: {str(download_error)}")
+                
+                # Determine content type based on file extension
+                file_extension = original_file['file_name'].split('.')[-1].lower()
+                content_type_map = {
+                    'pdf': 'application/pdf',
+                    'md': 'text/markdown',
+                    'txt': 'text/plain',
+                    'csv': 'text/csv',
+                    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    'png': 'image/png',
+                    'jpg': 'image/jpeg',
+                    'jpeg': 'image/jpeg'
+                }
+                content_type = content_type_map.get(file_extension, 'application/octet-stream')
+                
+                # Upload to new location in user_playbooks storage
+                new_storage_url = await self.upload_file_to_storage(
+                    new_file_path, 
+                    file_content, 
+                    content_type
+                )
+                
+                # Create new file entry in user_playbook_files table
+                file_data = {
+                    "id": str(uuid.uuid4()),
+                    "user_playbook_id": user_playbook_id,
+                    "file_path": original_file['file_name'],  # Relative path within the playbook
+                    "file_type": original_file['file_type'],
+                    "storage_path": new_storage_url,  # Full storage URL
+                    "uploaded_at": datetime.utcnow().isoformat(),
+                    "last_modified_at": datetime.utcnow().isoformat(),
+                    "version": "v1"
+                }
+                
+                response = self.client.table("user_playbook_files").insert(file_data).execute()
+                if response.data:
+                    copied_files.append(response.data[0])
+            
+            return copied_files
+        except Exception as e:
+            raise Exception(f"Failed to copy playbook files: {str(e)}")
+
+    async def get_user_playbook(self, user_playbook_id: str) -> Optional[Dict[str, Any]]:
+        """Get a user playbook by ID with original playbook details"""
+        try:
+            response = self.client.table("user_playbooks").select("""
+                *,
+                playbooks!user_playbooks_original_playbook_id_fkey (
+                    id, title, description, tags, stage, version, created_at
+                )
+            """).eq("id", user_playbook_id).execute()
+            
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to get user playbook: {str(e)}")
+
+    async def get_user_playbook_files(self, user_playbook_id: str) -> List[Dict[str, Any]]:
+        """Get all files associated with a user playbook"""
+        try:
+            response = self.client.table("user_playbook_files").select("*").eq("user_playbook_id", user_playbook_id).execute()
+            return response.data
+        except Exception as e:
+            raise Exception(f"Failed to get user playbook files: {str(e)}")
+
+    async def upload_user_playbook_file(self, user_playbook_id: str, file_name: str, file_content: bytes, file_type: str, content_type: str) -> Dict[str, Any]:
+        """Upload a new file to a user playbook"""
+        try:
+            # Generate storage path for the file
+            file_path = f"user_playbooks/{user_playbook_id}/{file_name}"
+            
+            # Upload to storage
+            storage_url = await self.upload_file_to_storage(file_path, file_content, content_type)
+            
+            # Create file entry in database
+            file_data = {
+                "id": str(uuid.uuid4()),
+                "user_playbook_id": user_playbook_id,
+                "file_path": file_name,
+                "file_type": file_type,
+                "storage_path": storage_url,
+                "uploaded_at": datetime.utcnow().isoformat(),
+                "last_modified_at": datetime.utcnow().isoformat(),
+                "version": "v1"
+            }
+            
+            response = self.client.table("user_playbook_files").insert(file_data).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to upload user playbook file: {str(e)}")
+
+    async def delete_user_playbook_file(self, file_id: str) -> bool:
+        """Delete a user playbook file"""
+        try:
+            # Get file info first
+            file_response = self.client.table("user_playbook_files").select("storage_path").eq("id", file_id).execute()
+            if not file_response.data:
+                return False
+            
+            storage_path = file_response.data[0]['storage_path']
+            
+            # Extract file path from storage URL
+            if storage_path.startswith('http'):
+                path_parts = storage_path.split('/')
+                bucket_index = next(i for i, part in enumerate(path_parts) if part == settings.storage_bucket_name)
+                file_path = '/'.join(path_parts[bucket_index + 1:])
+            else:
+                file_path = storage_path
+            
+            # Delete from storage
+            await self.delete_file_from_storage(file_path)
+            
+            # Delete from database
+            self.client.table("user_playbook_files").delete().eq("id", file_id).execute()
+            
+            return True
+        except Exception as e:
+            raise Exception(f"Failed to delete user playbook file: {str(e)}")
+
+    async def get_user_playbooks(self, user_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get all user playbooks for a specific user"""
+        try:
+            response = self.client.table("user_playbooks").select("""
+                *,
+                playbooks!user_playbooks_original_playbook_id_fkey (
+                    id, title, description, tags, stage, version, created_at
+                )
+            """).eq("user_id", user_id).range(offset, offset + limit - 1).execute()
+            
+            return response.data
+        except Exception as e:
+            raise Exception(f"Failed to get user playbooks: {str(e)}")
 
 
 # Global instance
