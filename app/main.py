@@ -58,23 +58,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.api import auth, playbooks
-app.include_router(auth.router, prefix="/api/v1")
-app.include_router(playbooks.router, prefix="/api/v1")
-# Include routers (lazy import to avoid startup issues)
-@app.on_event("startup")
-async def startup_event():
-    """Startup event to import routers"""
-    try:
-        
-        # from app.api import auth, playbooks
-        # app.include_router(auth.router, prefix="/api/v1")
-        # app.include_router(playbooks.router, prefix="/api/v1")
-        # app.include_router(router, prefix="/test")
-        logger.info("✅ Routers loaded successfully")
-    except Exception as e:
-        logger.error(f"❌ Error loading routers: {e}")
-        raise
+# Import and include routers
+try:
+    from app.api import auth, playbooks, pr
+    app.include_router(auth.router, prefix="/api/v1")
+    app.include_router(playbooks.router, prefix="/api/v1")
+    app.include_router(pr.router, prefix="/api/v1")
+    logger.info("✅ Routers loaded successfully (including PR workflow)")
+except Exception as e:
+    logger.error(f"❌ Error loading routers: {e}")
+    raise
 
 
 

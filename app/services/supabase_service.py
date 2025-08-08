@@ -274,6 +274,163 @@ class SupabaseService:
             return True
         except Exception as e:
             raise Exception(f"Failed to delete file from storage: {str(e)}")
+    
+    # ==========================================
+    # Pull Request Methods
+    # ==========================================
+    
+    async def create_pull_request(self, pr_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new pull request"""
+        try:
+            pr_id = str(uuid.uuid4())
+            pr_data["id"] = pr_id
+            pr_data["created_at"] = datetime.utcnow().isoformat()
+            pr_data["updated_at"] = datetime.utcnow().isoformat()
+            
+            response = self.client.table("pull_requests").insert(pr_data).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to create pull request: {str(e)}")
+    
+    async def get_pull_request(self, pr_id: str) -> Optional[Dict[str, Any]]:
+        """Get pull request by ID"""
+        try:
+            response = self.client.table("pull_requests").select("*").eq("id", pr_id).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to get pull request: {str(e)}")
+    
+    async def update_pull_request(self, pr_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Update a pull request"""
+        try:
+            update_data["updated_at"] = datetime.utcnow().isoformat()
+            response = self.client.table("pull_requests").update(update_data).eq("id", pr_id).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to update pull request: {str(e)}")
+    
+    async def list_pull_requests(
+        self, 
+        playbook_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """List pull requests with optional filters"""
+        try:
+            query = self.client.table("pull_requests").select("*")
+            
+            if playbook_id:
+                query = query.eq("target_playbook_id", playbook_id)
+            if user_id:
+                query = query.eq("user_id", user_id)
+            if status:
+                query = query.eq("status", status)
+            
+            query = query.order("created_at", desc=True).limit(limit).offset(offset)
+            
+            response = query.execute()
+            return response.data
+        except Exception as e:
+            raise Exception(f"Failed to list pull requests: {str(e)}")
+    
+    async def create_pull_request_file(self, file_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a pull request file record with comprehensive schema"""
+        try:
+            file_id = str(uuid.uuid4())
+            file_data["id"] = file_id
+            file_data["created_at"] = datetime.utcnow().isoformat()
+            
+            # Ensure required fields are present with defaults
+            file_data.setdefault("change_type", "modified")
+            file_data.setdefault("risk_flags", [])
+            file_data.setdefault("confidence", 0.8)
+            
+            response = self.client.table("pull_request_files").insert(file_data).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to create pull request file: {str(e)}")
+    
+    async def get_pull_request_files(self, pr_id: str) -> List[Dict[str, Any]]:
+        """Get all files for a pull request"""
+        try:
+            response = self.client.table("pull_request_files").select("*").eq("pr_id", pr_id).execute()
+            return response.data
+        except Exception as e:
+            raise Exception(f"Failed to get pull request files: {str(e)}")
+    
+    async def get_user_playbook_file_by_path(self, user_playbook_id: str, file_path: str) -> Optional[Dict[str, Any]]:
+        """Get user playbook file by file path"""
+        try:
+            response = self.client.table("user_playbook_files").select("*").eq("user_playbook_id", user_playbook_id).eq("file_path", file_path).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to get user playbook file by path: {str(e)}")
+    
+    async def get_playbook_file_by_name(self, playbook_id: str, file_name: str) -> Optional[Dict[str, Any]]:
+        """Get playbook file by file name"""
+        try:
+            response = self.client.table("playbook_files").select("*").eq("playbook_id", playbook_id).eq("file_name", file_name).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to get playbook file by name: {str(e)}")
+    
+    async def list_playbooks(self, owner_id: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """List playbooks with optional owner filter"""
+        try:
+            query = self.client.table("playbooks").select("*")
+            
+            if owner_id:
+                query = query.eq("owner_id", owner_id)
+            
+            query = query.order("created_at", desc=True).limit(limit)
+            
+            response = query.execute()
+            return response.data
+        except Exception as e:
+            raise Exception(f"Failed to list playbooks: {str(e)}")
+    
+    # ==========================================
+    # Fork Methods (using forks table)
+    # ==========================================
+    
+    async def get_fork(self, fork_id: str) -> Optional[Dict[str, Any]]:
+        """Get fork by ID"""
+        try:
+            response = self.client.table("forks").select("*").eq("id", fork_id).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to get fork: {str(e)}")
+    
+    async def create_fork(self, fork_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new fork"""
+        try:
+            fork_id = str(uuid.uuid4())
+            fork_data["id"] = fork_id
+            fork_data["created_at"] = datetime.utcnow().isoformat()
+            
+            response = self.client.table("forks").insert(fork_data).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            raise Exception(f"Failed to create fork: {str(e)}")
+    
+    async def list_forks(self, user_id: Optional[str] = None, playbook_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List forks with optional filters"""
+        try:
+            query = self.client.table("forks").select("*")
+            
+            if user_id:
+                query = query.eq("user_id", user_id)
+            if playbook_id:
+                query = query.eq("playbook_id", playbook_id)
+            
+            query = query.order("created_at", desc=True)
+            
+            response = query.execute()
+            return response.data
+        except Exception as e:
+            raise Exception(f"Failed to list forks: {str(e)}")
 
     async def copy_playbook_files(self, user_playbook_id: str, original_files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Copy files from original playbook to user playbook"""
