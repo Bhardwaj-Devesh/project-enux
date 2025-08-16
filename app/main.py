@@ -90,7 +90,8 @@ async def health_check():
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
-    """Global exception handler"""
+    """Global exception handler for HTTPExceptions"""
+    logger.info(f"HTTPException: {exc.status_code} - {exc.detail}")
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail}
@@ -100,7 +101,7 @@ async def http_exception_handler(request, exc):
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
     """Global exception handler for unhandled exceptions"""
-    logger.error(f"Unhandled exception: {exc}")
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error"}

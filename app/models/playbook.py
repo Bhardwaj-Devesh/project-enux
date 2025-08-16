@@ -7,15 +7,20 @@ from uuid import UUID
 class PlaybookCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     description: str = Field(..., min_length=1, max_length=1000)
+    blog_content: Optional[str] = Field(None, description="Markdown blog content")
     stage: Optional[str] = Field(None, max_length=50)
     tags: Optional[List[str]] = Field(default_factory=list)
     version: str = Field(default="v1", max_length=20)
 
 
+import json
+from typing import Union
+
 class PlaybookResponse(BaseModel):
     id: str
     title: str
     description: str
+    blog_content: Optional[str] = None
     tags: List[str]
     stage: Optional[str]
     owner_id: str
@@ -26,6 +31,21 @@ class PlaybookResponse(BaseModel):
     summary: Optional[str] = None
     vector_embedding: Optional[List[float]] = None
     
+    @classmethod
+    def from_orm(cls, obj):
+        """Custom from_orm method to handle vector_embedding conversion"""
+        data = obj.__dict__ if hasattr(obj, '__dict__') else obj
+        
+        # Convert vector_embedding from string to list if needed
+        if 'vector_embedding' in data and data['vector_embedding'] is not None:
+            if isinstance(data['vector_embedding'], str):
+                try:
+                    data['vector_embedding'] = json.loads(data['vector_embedding'])
+                except (json.JSONDecodeError, TypeError):
+                    data['vector_embedding'] = None
+        
+        return cls(**data)
+    
     class Config:
         from_attributes = True
 
@@ -33,6 +53,7 @@ class PlaybookResponse(BaseModel):
 class PlaybookUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=200)
     description: Optional[str] = Field(None, min_length=1, max_length=1000)
+    blog_content: Optional[str] = Field(None, description="Markdown blog content")
     stage: Optional[str] = Field(None, max_length=50)
     tags: Optional[List[str]] = None
     version: Optional[str] = Field(None, max_length=20)

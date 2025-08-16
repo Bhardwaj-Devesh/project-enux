@@ -66,15 +66,15 @@ class AuthService:
             # Hash the password before storing
             hashed_password = self.get_password_hash(password)
             
-            # Create user in Supabase Auth and users table
+            # Create user in users table
             user = await supabase_service.create_user(email, password, full_name, hashed_password)
             
             if user:
                 return {
-                    "id": user.id,
-                    "email": user.email,
-                    "full_name": full_name,
-                    "created_at": user.created_at
+                    "id": user["id"],
+                    "email": user["email"],
+                    "full_name": user["full_name"],
+                    "created_at": user["created_at"]
                 }
             return None
         except Exception as e:

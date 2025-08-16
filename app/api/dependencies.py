@@ -31,10 +31,10 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 
 async def get_optional_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[TokenData]:
     """Get current user if token is provided, otherwise return None"""
-    if credentials is None:
-        return None
-    
     try:
+        if credentials is None:
+            return None
+        
         token = credentials.credentials
         user_data = auth_service.get_current_user(token)
         
@@ -43,4 +43,24 @@ async def get_optional_user(credentials: Optional[HTTPAuthorizationCredentials] 
         
         return TokenData(user_id=user_data["id"], email=user_data["email"])
     except Exception:
-        return None 
+        return None
+
+
+async def get_authenticated_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> TokenData:
+    """Get authenticated user - required for protected endpoints"""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        token = credentials.credentials
+        user_data = auth_service.get_current_user(token)
+        
+        if user_data is None:
+            raise credentials_exception
+        
+        return TokenData(user_id=user_data["id"], email=user_data["email"])
+    except Exception:
+        raise credentials_exception 

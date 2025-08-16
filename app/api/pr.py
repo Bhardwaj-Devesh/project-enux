@@ -14,7 +14,7 @@ from app.models.pr import (
     SyncStatus, SyncRequest, SyncResponse, PRListRequest, PRListResponse
 )
 from app.models.auth import TokenData
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, get_authenticated_user
 from app.services.pr_service import pr_service
 
 router = APIRouter(prefix="/pull-requests", tags=["pull-requests"])
@@ -23,7 +23,7 @@ router = APIRouter(prefix="/pull-requests", tags=["pull-requests"])
 @router.post("/", response_model=PRResponse)
 async def create_pull_request(
     pr_request: PRCreateRequest,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """
     Create a new pull request with file changes
@@ -68,7 +68,7 @@ async def create_pull_request_from_zip(
     commit_message: str = Form(...),
     description: Optional[str] = Form(None),
     zip_file: UploadFile = File(...),
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """
     Create a pull request by uploading a ZIP file with changes
@@ -142,7 +142,7 @@ async def create_pull_request_from_zip(
 @router.get("/{pr_id}", response_model=PRResponse)
 async def get_pull_request(
     pr_id: str,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """
     Get pull request details including file changes and AI analysis
@@ -181,7 +181,7 @@ async def list_pull_requests(
     status: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """
     List pull requests with optional filters
@@ -234,7 +234,7 @@ async def list_pull_requests(
 @router.post("/{pr_id}/merge")
 async def merge_pull_request(
     pr_id: str,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """
     Merge a pull request (only by playbook owner)
@@ -260,7 +260,7 @@ async def merge_pull_request(
 @router.post("/{pr_id}/close")
 async def close_pull_request(
     pr_id: str,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """
     Close a pull request without merging
@@ -288,7 +288,7 @@ async def close_pull_request(
 @router.get("/forks/{fork_id}/sync-status", response_model=SyncStatus)
 async def get_sync_status(
     fork_id: str,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """
     Check if a fork is behind master and needs synchronization
@@ -325,7 +325,7 @@ async def get_sync_status(
 async def sync_fork(
     fork_id: str,
     sync_request: SyncRequest,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """
     Synchronize a fork with the master playbook

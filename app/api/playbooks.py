@@ -10,7 +10,7 @@ from app.models.playbook import (
     UserPlaybookResponse, PlaybookFileCreate, PlaybookFileResponse, PlaybookFileUpdate
 )
 from app.models.auth import TokenData
-from app.api.dependencies import get_current_user, get_optional_user
+from app.api.dependencies import get_current_user, get_optional_user, get_authenticated_user
 from app.services.supabase_service import supabase_service
 from app.services.ai_service import ai_service
 from app.services.vector_service import vector_service
@@ -18,22 +18,56 @@ from app.services.download_service import download_service
 from app.config import settings
 import json
 import io
+from datetime import datetime
 
 
 router = APIRouter(prefix="/playbooks", tags=["playbooks"])
+
+
+def convert_vector_embedding(playbook_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert vector_embedding from string to list if needed"""
+    if playbook_data.get('vector_embedding') and isinstance(playbook_data['vector_embedding'], str):
+        try:
+            playbook_data['vector_embedding'] = json.loads(playbook_data['vector_embedding'])
+        except (json.JSONDecodeError, TypeError):
+            playbook_data['vector_embedding'] = None
+    return playbook_data
+
+
+def ensure_datetime_fields(playbook_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure created_at and updated_at fields are valid datetime objects"""
+    from datetime import datetime
+    
+    # Handle created_at
+    if not playbook_data.get('created_at'):
+        playbook_data['created_at'] = datetime.utcnow()
+    elif isinstance(playbook_data['created_at'], str):
+        try:
+            playbook_data['created_at'] = datetime.fromisoformat(playbook_data['created_at'].replace('Z', '+00:00'))
+        except (ValueError, TypeError):
+            playbook_data['created_at'] = datetime.utcnow()
+    
+    # Handle updated_at
+    if not playbook_data.get('updated_at'):
+        playbook_data['updated_at'] = datetime.utcnow()
+    elif isinstance(playbook_data['updated_at'], str):
+        try:
+            playbook_data['updated_at'] = datetime.fromisoformat(playbook_data['updated_at'].replace('Z', '+00:00'))
+        except (ValueError, TypeError):
+            playbook_data['updated_at'] = datetime.utcnow()
+    
+    return playbook_data
 
 
 @router.post("/upload", response_model=PlaybookUploadResponse)
 async def upload_playbook(
     title: str = Form(...),
     description: str = Form(...),
-    stage: Optional[str] = Form(None),
-    tags: Optional[str] = Form(None),  # JSON string
-    version: str = Form("v1"),
+    blog_content: Optional[str] = Form(None),
     files: List[UploadFile] = File(...),
-    owner_id: str = Form("demo_user_123")  # Default owner ID for testing
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
-    """Upload a new playbook with files (No authentication required)"""
+    """Upload a new playbook with files (Authentication required)"""
     try:
         # Validate file size and type
         total_size = 0
@@ -47,30 +81,27 @@ async def upload_playbook(
                 detail=f"Total file size exceeds {settings.max_file_size} bytes"
             )
         
-        # Parse tags
-        parsed_tags = []
-        if tags:
-            try:
-                parsed_tags = json.loads(tags)
-            except json.JSONDecodeError:
-                parsed_tags = [tag.strip() for tag in tags.split(",")]
-        
         # Create playbook data
         playbook_data = {
             "title": title,
             "description": description,
-            "stage": stage,
-            "tags": parsed_tags,
-            "version": version,
-            "owner_id": owner_id,
+            "blog_content": blog_content,
+            "tags": [],  # Will be calculated by LLM
+            "version": "v1",  # Hard coded as v1
+            "owner_id": current_user.user_id,
             "files": {},
             "summary": None,
             "vector_embedding": None
         }
         
-        # Upload files to storage
+        # Upload files to storage and create playbook_files entries
         uploaded_files = []
+        playbook_files_data = []
+        files_with_content = []  # Store files with their content for AI processing
+        
         for file in files:
+            print(f"📁 Processing file: {file.filename} ({file.content_type})")
+            
             if file.content_type not in settings.allowed_file_types:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -82,13 +113,17 @@ async def upload_playbook(
             file_extension = settings.file_extensions.get(file.content_type, "")
             file_path = f"{file_id}{file_extension}"
             
-            # Upload to Supabase Storage
+            # Read file content once and store it
             file_content = await file.read()
+            print(f"📊 Read {len(file_content)} bytes from {file.filename}")
+            
+            # Upload to Supabase Storage
             file_url = await supabase_service.upload_file_to_storage(
                 file_path, file_content, file.content_type
             )
+            print(f"✅ Uploaded {file.filename} to storage")
             
-            # Store file info
+            # Store file info for playbook
             playbook_data["files"][file.filename] = file_url
             uploaded_files.append(FileUpload(
                 filename=file.filename,
@@ -96,27 +131,45 @@ async def upload_playbook(
                 size=len(file_content),
                 file_path=file_path
             ))
+            
+            # Store file with content for AI processing
+            files_with_content.append({
+                "file": file,
+                "content": file_content,
+                "filename": file.filename,
+                "content_type": file.content_type
+            })
+            
+            # Prepare data for playbook_files table
+            file_type = file.content_type.split('/')[-1] if '/' in file.content_type else 'txt'
+            playbook_files_data.append({
+                "file_name": file.filename,
+                "file_type": file_type,
+                "storage_path": file_url,
+                # "file_size": len(file_content),  # Temporarily removed due to missing column
+                "uploaded_by": current_user.user_id
+            })
         
-           # Extract text content from files for vector storage
-            files_for_vector_storage = []
-            for file_info in uploaded_files:
-                # Download file content for vector processing
-                file_content = supabase_service.client.storage.from_(
-                    settings.storage_bucket_name
-                ).download(file_info.file_path)
-                
+        # Extract text content from files for vector storage (using stored content)
+        files_for_vector_storage = []
+        for file_info in files_with_content:
+            try:
                 # Extract text content for embedding
                 text_content = await ai_service.extract_text_from_file(
-                    file_content,
-                    file_info.filename,
-                    file_info.content_type
+                    file_info["content"],
+                    file_info["filename"],
+                    file_info["content_type"]
                 )
             
-            files_for_vector_storage.append({
-                "filename": file_info.filename,
-                "content": text_content,
-                "content_type": file_info.content_type
-            })
+                files_for_vector_storage.append({
+                    "filename": file_info["filename"],
+                    "content": text_content,
+                    "content_type": file_info["content_type"]
+                })
+                print(f"✅ Extracted text from {file_info['filename']} for vector storage")
+            except Exception as e:
+                print(f"⚠️ Failed to extract text from {file_info['filename']}: {e}")
+                continue
         
         # Create playbook in database first to get the ID
         playbook = await supabase_service.create_playbook(playbook_data)
@@ -127,23 +180,89 @@ async def upload_playbook(
                 detail="Failed to create playbook"
             )
         
-        # Store files in vector database
-        vector_storage_result = await vector_service.store_file_vectors(
-            files_for_vector_storage, 
-            playbook["id"]
+        # Create playbook_files entries for all uploaded files
+        for file_data in playbook_files_data:
+            file_data["playbook_id"] = playbook["id"]
+            await supabase_service.create_playbook_file(file_data)
+        
+        # Process files with AI synchronously to get tags and summary (fast response)
+        print(f"🚀 Starting synchronous AI processing for {len(files_with_content)} files...")
+        
+        # Prepare files for AI processing
+        files_for_ai = []
+        for file_info in files_with_content:
+            try:
+                files_for_ai.append({
+                    "filename": file_info["filename"],
+                    "content": file_info["content"],
+                    "content_type": file_info["content_type"]
+                })
+                print(f"✅ Prepared {file_info['filename']} for AI processing")
+            except Exception as e:
+                print(f"⚠️ Failed to prepare {file_info['filename']}: {e}")
+                continue
+        
+        # Process with AI to get tags, summary, and stage (synchronous - fast)
+        ai_results = await ai_service.process_playbook_files(files_for_ai, title, description, blog_content)
+        
+        print(f"✅ Synchronous AI processing completed")
+        print(f"📝 Summary: {ai_results['summary'][:100]}...")
+        print(f"🏷️ Tags: {ai_results['tags']}")
+        print(f"📈 Stage: {ai_results['stage']}")
+        
+        # Update playbook with AI results immediately (without embedding)
+        update_data = {
+            "summary": ai_results["summary"],
+            "tags": ai_results["tags"],
+            "stage": ai_results["stage"],
+            "vector_embedding": None  # Will be updated in background
+        }
+        
+        print(f"💾 Updating playbook {playbook['id']} with AI results...")
+        updated_playbook = await supabase_service.update_playbook(playbook["id"], update_data)
+        
+        # Start background embedding processing
+        print(f"🔄 Starting background embedding processing...")
+        # Use the already extracted text from files_for_vector_storage
+        all_text = ""
+        for file_info in files_for_vector_storage:
+            all_text += f"\n\n--- {file_info['filename']} ---\n{file_info['content']}"
+        
+        # Start background task for embedding
+        asyncio.create_task(
+            ai_service.process_playbook_embedding_background(
+                playbook["id"], 
+                title, 
+                description, 
+                all_text, 
+                blog_content
+            )
         )
         
-        if not vector_storage_result["success"]:
-            print(f"Warning: Vector storage failed for playbook {playbook['id']}: {vector_storage_result.get('error', 'Unknown error')}")
+        # Store individual file vectors for search functionality
+        print(f"🔍 Storing file vectors for search...")
+        try:
+            vector_storage_result = await vector_service.store_file_vectors(
+                files_for_vector_storage, 
+                playbook["id"]
+            )
+            
+            if vector_storage_result["success"]:
+                print(f"✅ Stored vectors for {vector_storage_result['stored_count']} files")
+            else:
+                print(f"⚠️ Vector storage failed: {vector_storage_result.get('error', 'Unknown error')}")
+                
+        except Exception as e:
+            print(f"⚠️ Failed to store file vectors: {e}")
         
-        # Process files with AI in background
-        asyncio.create_task(process_playbook_ai(playbook["id"], uploaded_files, title, description))
+        # Convert vector_embedding from string to list if needed
+        updated_playbook = convert_vector_embedding(updated_playbook)
         
         return PlaybookUploadResponse(
-            playbook=PlaybookResponse(**playbook),
+            playbook=PlaybookResponse(**updated_playbook),
             files=uploaded_files,
-            processing_status="processing",
-            message="Playbook uploaded successfully. AI processing started in background."
+            processing_status="completed",
+            message="Playbook uploaded successfully with AI insights. Vector embedding processing in background."
         )
     
     except Exception as e:
@@ -153,25 +272,39 @@ async def upload_playbook(
         )
 
 
-async def process_playbook_ai(playbook_id: str, files: List[FileUpload], title: str, description: str):
-    """Process playbook files with AI in background"""
+async def process_playbook_ai_with_content(playbook_id: str, files_with_content: List[Dict], title: str, description: str, blog_content: Optional[str] = None):
+    """Process playbook files with AI in background using files with content already available"""
     try:
-        # Prepare files for AI processing
-        files_for_ai = []
-        for file_info in files:
-            # Download file content for AI processing
-            file_content = await supabase_service.client.storage.from_(
-                settings.storage_bucket_name
-            ).download(file_info.file_path)
-            
-            files_for_ai.append({
-                "filename": file_info.filename,
-                "content": file_content,
-                "content_type": file_info.content_type
-            })
+        print(f"🤖 Starting AI processing for playbook {playbook_id}")
         
-        # Process with AI
-        ai_results = await ai_service.process_playbook_files(files_for_ai, title, description)
+        # Prepare files for AI processing using stored content
+        files_for_ai = []
+        for file_info in files_with_content:
+            try:
+                files_for_ai.append({
+                    "filename": file_info["filename"],
+                    "content": file_info["content"],
+                    "content_type": file_info["content_type"]
+                })
+                print(f"✅ Prepared {file_info['filename']} for AI processing")
+            except Exception as e:
+                print(f"⚠️ Failed to prepare {file_info['filename']}: {e}")
+                continue
+        
+        if not files_for_ai:
+            print(f"❌ No files available for AI processing for playbook {playbook_id}")
+            return
+        
+        print(f"📊 Processing {len(files_for_ai)} files with AI...")
+        
+        # Process with AI (include blog_content in processing)
+        ai_results = await ai_service.process_playbook_files(files_for_ai, title, description, blog_content)
+        
+        print(f"✅ AI processing completed for playbook {playbook_id}")
+        print(f"📝 Summary: {ai_results['summary'][:100]}...")
+        print(f"🏷️ Tags: {ai_results['tags']}")
+        print(f"📈 Stage: {ai_results['stage']}")
+        print(f"🔢 Embedding dimensions: {len(ai_results['embedding'])}")
         
         # Update playbook with AI results
         update_data = {
@@ -181,10 +314,124 @@ async def process_playbook_ai(playbook_id: str, files: List[FileUpload], title: 
             "vector_embedding": ai_results["embedding"]
         }
         
+        print(f"💾 Updating playbook {playbook_id} with AI results...")
         await supabase_service.update_playbook(playbook_id, update_data)
+        print(f"✅ Playbook {playbook_id} updated successfully with vector embedding")
         
     except Exception as e:
-        print(f"Error processing playbook {playbook_id}: {str(e)}")
+        print(f"❌ Error processing playbook {playbook_id}: {str(e)}")
+        # Try to update with error information
+        try:
+            error_update = {
+                "summary": f"AI processing failed: {str(e)}",
+                "tags": ["error", "processing-failed"],
+                "stage": "unknown"
+            }
+            await supabase_service.update_playbook(playbook_id, error_update)
+        except:
+            pass
+
+
+async def store_file_vectors_for_playbook(playbook_id: str, files_with_content: List[Dict]):
+    """Store individual file vectors for search functionality"""
+    print(f"🔍 Storing file vectors for search...")
+    try:
+        from app.services.vector_service import vector_service
+        
+        # Prepare files for vector storage
+        files_for_vector_storage = []
+        for file_info in files_with_content:
+            try:
+                text_content = await ai_service.extract_text_from_file(
+                    file_info["content"],
+                    file_info["filename"],
+                    file_info["content_type"]
+                )
+                files_for_vector_storage.append({
+                    "filename": file_info["filename"],
+                    "content": text_content,
+                    "content_type": file_info["content_type"]
+                })
+                print(f"✅ Extracted text from {file_info['filename']} for vector storage")
+            except Exception as e:
+                print(f"⚠️ Failed to extract text from {file_info['filename']}: {e}")
+                continue
+        
+        # Store vectors for each file
+        if files_for_vector_storage:
+            await vector_service.store_file_vectors(playbook_id, files_for_vector_storage)
+            print(f"✅ Stored vectors for {len(files_for_vector_storage)} files")
+        else:
+            print(f"⚠️ No files available for vector storage")
+            
+    except Exception as e:
+        print(f"⚠️ Failed to store file vectors: {e}")
+        # Continue processing even if vector storage fails
+
+
+async def process_playbook_ai(playbook_id: str, files: List[FileUpload], title: str, description: str, blog_content: Optional[str] = None):
+    """Process playbook files with AI in background (legacy function for when files need to be downloaded)"""
+    try:
+        print(f"🤖 Starting AI processing for playbook {playbook_id}")
+        
+        # Prepare files for AI processing
+        files_for_ai = []
+        for file_info in files:
+            try:
+                # Download file content for AI processing
+                file_content = await supabase_service.client.storage.from_(
+                    settings.storage_bucket_name
+                ).download(file_info.file_path)
+                
+                files_for_ai.append({
+                    "filename": file_info.filename,
+                    "content": file_content,
+                    "content_type": file_info.content_type
+                })
+                print(f"✅ Downloaded {file_info.filename} for AI processing")
+            except Exception as e:
+                print(f"⚠️ Failed to download {file_info.filename}: {e}")
+                continue
+        
+        if not files_for_ai:
+            print(f"❌ No files available for AI processing for playbook {playbook_id}")
+            return
+        
+        print(f"📊 Processing {len(files_for_ai)} files with AI...")
+        
+        # Process with AI (include blog_content in processing)
+        ai_results = await ai_service.process_playbook_files(files_for_ai, title, description, blog_content)
+        
+        print(f"✅ AI processing completed for playbook {playbook_id}")
+        print(f"📝 Summary: {ai_results['summary'][:100]}...")
+        print(f"🏷️ Tags: {ai_results['tags']}")
+        print(f"📈 Stage: {ai_results['stage']}")
+        print(f"🔢 Embedding dimensions: {len(ai_results['embedding'])}")
+        
+        # Update playbook with AI results
+        update_data = {
+            "summary": ai_results["summary"],
+            "tags": ai_results["tags"],
+            "stage": ai_results["stage"],
+            "vector_embedding": ai_results["embedding"]
+        }
+        
+        print(f"💾 Updating playbook {playbook_id} with AI results...")
+        await supabase_service.update_playbook(playbook_id, update_data)
+        print(f"✅ Playbook {playbook_id} updated successfully with vector embedding")
+        
+    except Exception as e:
+        print(f"❌ Error processing playbook {playbook_id}: {str(e)}")
+        # Try to update with error information
+        try:
+            error_update = {
+                "summary": f"AI processing failed: {str(e)}",
+                "tags": ["error", "processing-failed"],
+                "stage": "unknown"
+            }
+            await supabase_service.update_playbook(playbook_id, error_update)
+        except:
+            pass
 
 
 @router.get("/", response_model=List[PlaybookResponse])
@@ -193,11 +440,11 @@ async def get_playbooks(
     offset: int = 0,
     current_user: Optional[TokenData] = Depends(get_optional_user)
 ):
-    """Get all playbooks"""
+    """Get all playbooks (public, but authenticated users see their own playbooks)"""
     try:
         user_id = current_user.user_id if current_user else None
         playbooks = await supabase_service.get_playbooks(user_id, limit, offset)
-        return [PlaybookResponse(**playbook) for playbook in playbooks]
+        return [PlaybookResponse(**convert_vector_embedding(playbook)) for playbook in playbooks]
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -215,7 +462,7 @@ async def get_playbook(playbook_id: str):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Playbook not found"
             )
-        return PlaybookResponse(**playbook)
+        return PlaybookResponse(**convert_vector_embedding(playbook))
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -227,7 +474,7 @@ async def get_playbook(playbook_id: str):
 async def update_playbook(
     playbook_id: str,
     playbook_update: PlaybookUpdate,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """Update a playbook"""
     try:
@@ -255,7 +502,7 @@ async def update_playbook(
                 detail="Failed to update playbook"
             )
         
-        return PlaybookResponse(**updated_playbook)
+        return PlaybookResponse(**convert_vector_embedding(updated_playbook))
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -266,7 +513,7 @@ async def update_playbook(
 @router.delete("/{playbook_id}")
 async def delete_playbook(
     playbook_id: str,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """Delete a playbook"""
     try:
@@ -310,23 +557,42 @@ async def search_playbooks_vector(
 ):
     """Search playbooks using vector similarity"""
     try:
+        print(f"🔍 Starting vector search for query: '{query}'")
+        
         # Create embedding for query
+        print("📊 Creating query embedding...")
         query_embedding = await ai_service.create_embedding(query)
+        print(f"✅ Query embedding created with {len(query_embedding)} dimensions")
         
         # Search using vector similarity
+        print("🔍 Searching playbooks using vector similarity...")
         results = await supabase_service.search_playbooks_vector(query_embedding, limit)
+        print(f"✅ Found {len(results)} results")
         
-        return [
-            PlaybookSearchResult(
-                playbook=PlaybookResponse(**result["playbook"]),
-                similarity_score=result["similarity"]
-            )
-            for result in results
-        ]
+        # Transform results
+        search_results = []
+        for result in results:
+            try:
+                # Ensure all required fields are present and valid
+                playbook_data = convert_vector_embedding(result["playbook"])
+                playbook_data = ensure_datetime_fields(playbook_data)
+                
+                search_results.append(PlaybookSearchResult(
+                    playbook=PlaybookResponse(**playbook_data),
+                    similarity_score=result["similarity"]
+                ))
+            except Exception as e:
+                print(f"⚠️ Error processing search result: {e}")
+                continue
+        
+        print(f"🎯 Returning {len(search_results)} processed results")
+        return search_results
+        
     except Exception as e:
+        print(f"❌ Vector search failed: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=f"Vector search failed: {str(e)}"
         )
 
 
@@ -351,7 +617,7 @@ async def search_playbooks_text(
             query, parsed_tags, stage, limit, offset
         )
         
-        return [PlaybookResponse(**playbook) for playbook in results]
+        return [PlaybookResponse(**convert_vector_embedding(playbook)) for playbook in results]
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -381,12 +647,20 @@ async def get_playbook_processing_status(playbook_id: str):
             status = "processing"
             message = "AI processing started"
         
+        # Convert vector_embedding if it's a string
+        vector_embedding = playbook.get("vector_embedding")
+        if vector_embedding and isinstance(vector_embedding, str):
+            try:
+                vector_embedding = json.loads(vector_embedding)
+            except (json.JSONDecodeError, TypeError):
+                vector_embedding = None
+        
         return ProcessingStatus(
             status=status,
             message=message,
             summary=playbook.get("summary"),
             extracted_tags=playbook.get("tags"),
-            vector_embedding=playbook.get("vector_embedding")
+            vector_embedding=vector_embedding
         )
     except Exception as e:
         raise HTTPException(
@@ -429,16 +703,147 @@ async def get_playbook_files_vector(playbook_id: str):
         )
 
 
+@router.get("/{playbook_id}/embedding-status")
+async def get_playbook_embedding_status(playbook_id: str):
+    """Get the embedding status of a playbook for debugging"""
+    try:
+        # Get playbook information
+        playbook = await supabase_service.get_playbook(playbook_id)
+        if not playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # Get file vectors
+        file_vectors = await vector_service.get_file_vectors_by_playbook(playbook_id)
+        
+        # Convert vector_embedding if it's a string
+        vector_embedding = playbook.get("vector_embedding")
+        if vector_embedding and isinstance(vector_embedding, str):
+            try:
+                vector_embedding = json.loads(vector_embedding)
+            except (json.JSONDecodeError, TypeError):
+                vector_embedding = None
+        
+        return {
+            "playbook_id": playbook_id,
+            "has_playbook_embedding": vector_embedding is not None,
+            "playbook_embedding_dimensions": len(vector_embedding) if vector_embedding else 0,
+            "file_vectors_count": len(file_vectors),
+            "summary": playbook.get("summary"),
+            "tags": playbook.get("tags"),
+            "stage": playbook.get("stage"),
+            "ai_processing_complete": bool(playbook.get("summary") and vector_embedding)
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.post("/{playbook_id}/reprocess-ai")
+async def reprocess_playbook_ai(
+    playbook_id: str,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Manually trigger AI processing for a playbook (for debugging)"""
+    try:
+        # Get playbook information
+        playbook = await supabase_service.get_playbook(playbook_id)
+        if not playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # Check if user owns the playbook
+        if playbook["owner_id"] != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to reprocess this playbook"
+            )
+        
+        # Get playbook files
+        playbook_files = await supabase_service.get_playbook_files(playbook_id)
+        if not playbook_files:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No files found for this playbook"
+            )
+        
+        # Prepare files for AI processing
+        files_for_ai = []
+        for file_data in playbook_files:
+            try:
+                # Download file content from storage
+                file_content = supabase_service.client.storage.from_(
+                    settings.storage_bucket_name
+                ).download(file_data["storage_path"])
+                
+                files_for_ai.append({
+                    "filename": file_data["file_name"],
+                    "content": file_content,
+                    "content_type": file_data["file_type"]
+                })
+            except Exception as e:
+                print(f"⚠️ Failed to download {file_data['file_name']}: {e}")
+                continue
+        
+        if not files_for_ai:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No files could be downloaded for AI processing"
+            )
+        
+        # Process with AI
+        ai_results = await ai_service.process_playbook_files(
+            files_for_ai, 
+            playbook["title"], 
+            playbook["description"],
+            playbook.get("blog_content")
+        )
+        
+        # Update playbook with AI results
+        update_data = {
+            "summary": ai_results["summary"],
+            "tags": ai_results["tags"],
+            "stage": ai_results["stage"],
+            "vector_embedding": ai_results["embedding"]
+        }
+        
+        await supabase_service.update_playbook(playbook_id, update_data)
+        
+        return {
+            "message": "AI processing completed successfully",
+            "playbook_id": playbook_id,
+            "summary": ai_results["summary"],
+            "tags": ai_results["tags"],
+            "stage": ai_results["stage"],
+            "embedding_dimensions": len(ai_results["embedding"])
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reprocess playbook: {str(e)}"
+        )
+
+
 @router.post("/fork", response_model=PlaybookForkResponse)
 async def fork_playbook(
     fork_request: PlaybookForkRequest,
-    current_user: Optional[TokenData] = Depends(get_optional_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """Fork a playbook to user's workspace"""
     try:
         # Step 1: Validate input
-        # Validate user exists in database
-        user_exists = await supabase_service.validate_user_exists(fork_request.user_id)
+        # Use current authenticated user's ID
+        user_id = current_user.user_id
+        user_exists = await supabase_service.validate_user_exists(user_id)
         if not user_exists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -454,7 +859,7 @@ async def fork_playbook(
             )
         
         # Check if user already forked this playbook
-        existing_forks = await supabase_service.get_user_playbooks(fork_request.user_id)
+        existing_forks = await supabase_service.get_user_playbooks(user_id)
         for fork in existing_forks:
             if fork['original_playbook_id'] == fork_request.playbook_id:
                 raise HTTPException(
@@ -464,7 +869,7 @@ async def fork_playbook(
         
         # Step 2: Create new user playbook entry
         user_playbook = await supabase_service.create_user_playbook_fork(
-            user_id=fork_request.user_id,
+            user_id=user_id,
             original_playbook_id=fork_request.playbook_id,
             license=original_playbook.get('license')
         )
@@ -503,22 +908,16 @@ async def fork_playbook(
         )
 
 
-@router.get("/user/{user_id}/forks", response_model=List[UserPlaybookResponse])
+@router.get("/user/forks", response_model=List[UserPlaybookResponse])
 async def get_user_playbook_forks(
-    user_id: str,
     limit: int = 50,
     offset: int = 0,
-    current_user: Optional[TokenData] = Depends(get_optional_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """Get all playbook forks for a specific user"""
     try:
-        # Validate user exists
-        user_exists = await supabase_service.validate_user_exists(user_id)
-        if not user_exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
+        # Use current authenticated user's ID
+        user_id = current_user.user_id
         
         user_playbooks = await supabase_service.get_user_playbooks(user_id, limit, offset)
         
@@ -701,7 +1100,7 @@ async def download_original_playbook(
 @router.get("/user-playbooks/{user_playbook_id}/download")
 async def download_forked_playbook(
     user_playbook_id: str,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """Download forked playbook as ZIP file"""
     try:
@@ -841,7 +1240,7 @@ async def upload_playbook_file(
     file: UploadFile = File(...),
     file_path: Optional[str] = Form(None),
     tags: Optional[str] = Form("[]"),
-    current_user: Optional[TokenData] = Depends(get_optional_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """Upload a file to a playbook and create the database entry"""
     try:
@@ -955,7 +1354,7 @@ async def upload_playbook_file(
 async def create_playbook_file_metadata(
     playbook_id: str,
     file_data: PlaybookFileCreate,
-    current_user: Optional[TokenData] = Depends(get_optional_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """Create a playbook file metadata entry (without uploading actual file)"""
     try:
@@ -1064,7 +1463,7 @@ async def update_playbook_file(
     playbook_id: str,
     file_id: str,
     file_update: PlaybookFileUpdate,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """Update a playbook file entry"""
     try:
@@ -1117,7 +1516,7 @@ async def update_playbook_file(
 async def delete_playbook_file(
     playbook_id: str,
     file_id: str,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_authenticated_user)
 ):
     """Delete a playbook file entry"""
     try:

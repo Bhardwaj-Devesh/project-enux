@@ -27,8 +27,8 @@ class VectorService:
         """Lazy initialization of Gemini embedding model"""
         if self._embedding_model is None:
             self._configure()
-            # Use the correct embedding model name as per Google's documentation
-            self._embedding_model = genai.GenerativeModel('gemini-embedding-001')
+            # Use the correct embedding model name
+            self._embedding_model = 'models/embedding-001'
         return self._embedding_model
     
     async def create_file_embedding(self, file_content: str, filename: str, content_type: str) -> List[float]:
@@ -48,10 +48,13 @@ class VectorService:
             embedding_text = f"File: {filename}\nType: {content_type}\nContent: {file_content[:6000]}"
             
             # Create embedding using Google's API
-            embedding_result = self.embedding_model.embed_content(embedding_text)
+            embedding_result = genai.embed_content(
+                model=self.embedding_model,
+                content=embedding_text
+            )
             
             # Convert to list of floats and normalize
-            embedding_vector = embedding_result.embedding
+            embedding_vector = embedding_result['embedding']
             
             # Normalize the embedding for better similarity calculations
             normalized_embedding = self._normalize_embedding(embedding_vector)
@@ -159,7 +162,7 @@ class VectorService:
             
             for record in vector_records:
                 # Store in the file_vectors table
-                result = await supabase_service.client.table('file_vectors').insert({
+                result = supabase_service.client.table('file_vectors').insert({
                     "id": record["id"],
                     "playbook_id": record["playbook_id"],
                     "filename": record["filename"],
@@ -195,7 +198,7 @@ class VectorService:
             query_embedding = await self.create_file_embedding(query, "query", "text/plain")
             
             # Search using vector similarity in Supabase
-            result = await supabase_service.client.rpc(
+            result = supabase_service.client.rpc(
                 'search_file_vectors',
                 {
                     'query_embedding': query_embedding,
@@ -224,7 +227,7 @@ class VectorService:
             List of vector records for the playbook
         """
         try:
-            result = await supabase_service.client.table('file_vectors').select(
+            result = supabase_service.client.table('file_vectors').select(
                 "*"
             ).eq("playbook_id", playbook_id).execute()
             
@@ -245,7 +248,7 @@ class VectorService:
             True if successful, False otherwise
         """
         try:
-            result = await supabase_service.client.table('file_vectors').delete().eq(
+            result = supabase_service.client.table('file_vectors').delete().eq(
                 "playbook_id", playbook_id
             ).execute()
             

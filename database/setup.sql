@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS playbooks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,
     description TEXT,
+    blog_content TEXT,
     tags TEXT[] DEFAULT '{}',
     stage TEXT,
     owner_id UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -92,6 +93,8 @@ RETURNS TABLE (
     version TEXT,
     files JSONB,
     summary TEXT,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
     similarity float
 )
 LANGUAGE plpgsql
@@ -108,6 +111,8 @@ BEGIN
         p.version,
         p.files,
         p.summary,
+        p.created_at,
+        p.updated_at,
         1 - (p.vector_embedding <=> query_embedding) as similarity
     FROM playbooks p
     WHERE p.vector_embedding IS NOT NULL

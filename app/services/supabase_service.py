@@ -1,6 +1,7 @@
 from supabase import create_client, Client
 from typing import List, Dict, Any, Optional
 import json
+import math
 from datetime import datetime
 import uuid
 from app.config import settings
@@ -30,28 +31,30 @@ class SupabaseService:
     async def create_user(self, email: str, password: str, full_name: str, hashed_password: str) -> Dict[str, Any]:
         """Create a new user in Supabase Auth and Users table"""
         try:
-            # First create user in Supabase Auth
-            auth_response = self.service_client.auth.admin.create_user({
-                "email": email,
-                "password": password,
-                "user_metadata": {"full_name": full_name}
-            })
+            # Generate a UUID for the user
+            user_id = str(uuid.uuid4())
             
-            if auth_response.user:
-                # Then create user in users table with hashed password
-                user_data = {
-                    "id": auth_response.user.id,
+            # Create user directly in users table with hashed password
+            user_data = {
+                "id": user_id,
+                "email": email,
+                "full_name": full_name,
+                "hashed_password": hashed_password,
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            
+            # Insert into users table
+            table_response = self.client.table("users").insert(user_data).execute()
+            
+            if table_response.data:
+                # Return user data in the expected format
+                return {
+                    "id": user_id,
                     "email": email,
                     "full_name": full_name,
-                    "hashed_password": hashed_password,
-                    "created_at": datetime.utcnow().isoformat(),
-                    "updated_at": datetime.utcnow().isoformat()
+                    "created_at": user_data["created_at"]
                 }
-                
-                # Insert into users table
-                table_response = self.client.table("users").insert(user_data).execute()
-                
-                return auth_response.user
             return None
         except Exception as e:
             raise Exception(f"Failed to create user: {str(e)}")
@@ -122,6 +125,8 @@ class SupabaseService:
     async def search_playbooks_vector(self, query_embedding: List[float], limit: int = 10) -> List[Dict[str, Any]]:
         """Search playbooks using vector similarity"""
         try:
+            print(f"🔍 Searching playbooks with embedding of {len(query_embedding)} dimensions")
+            
             # Using pgvector cosine similarity
             response = self.client.rpc(
                 "match_playbooks",
@@ -131,8 +136,64 @@ class SupabaseService:
                     "match_count": limit
                 }
             ).execute()
-            return response.data
+            
+            print(f"✅ Vector search response: {len(response.data) if response.data else 0} results")
+            
+            # Debug: Print the first result to see what fields are available
+            if response.data:
+                print(f"🔍 Debug - First result fields: {list(response.data[0].keys())}")
+                print(f"🔍 Debug - First result: {response.data[0]}")
+                print(f"🔍 Debug - Similarity value: {response.data[0].get('similarity')} (type: {type(response.data[0].get('similarity'))})")
+            
+            if response.data:
+                # Transform the results to match expected format
+                transformed_results = []
+                for result in response.data:
+                    # Handle missing datetime fields gracefully
+                    created_at = result.get("created_at")
+                    updated_at = result.get("updated_at")
+                    
+                    # If datetime fields are missing, use current time
+                    if not created_at:
+                        created_at = datetime.utcnow().isoformat()
+                    if not updated_at:
+                        updated_at = datetime.utcnow().isoformat()
+                    
+                    # Handle NaN similarity scores
+                    similarity = result["similarity"]
+                    if similarity == 'NaN' or (isinstance(similarity, float) and math.isnan(similarity)):
+                        similarity = 0.0  # Default to 0 similarity for NaN values
+                    elif isinstance(similarity, str):
+                        try:
+                            similarity = float(similarity)
+                            if math.isnan(similarity):
+                                similarity = 0.0
+                        except (ValueError, TypeError):
+                            similarity = 0.0
+                    
+                    transformed_results.append({
+                        "playbook": {
+                            "id": result["id"],
+                            "title": result["title"],
+                            "description": result["description"],
+                            "tags": result["tags"],
+                            "stage": result["stage"],
+                            "owner_id": result["owner_id"],
+                            "version": result["version"],
+                            "files": result["files"],
+                            "summary": result["summary"],
+                            "created_at": created_at,
+                            "updated_at": updated_at
+                        },
+                        "similarity": similarity
+                    })
+                return transformed_results
+            else:
+                print("⚠️ No results found in vector search")
+                return []
+                
         except Exception as e:
+            print(f"❌ Vector search error: {str(e)}")
             raise Exception(f"Failed to search playbooks: {str(e)}")
     
     async def search_playbooks_text(self, query: str, tags: Optional[List[str]] = None, 
