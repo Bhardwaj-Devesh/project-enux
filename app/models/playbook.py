@@ -3,7 +3,6 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
 
-
 class PlaybookCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     description: str = Field(..., min_length=1, max_length=1000)
@@ -48,6 +47,75 @@ class PlaybookResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+class PlaybookWithForkInfo(BaseModel):
+    """Enhanced playbook response with fork information"""
+    id: str
+    title: str
+    description: str
+    blog_content: Optional[str] = None
+    tags: List[str]
+    stage: Optional[str]
+    owner_id: str
+    version: str
+    files: Dict[str, str]
+    created_at: datetime
+    updated_at: datetime
+    summary: Optional[str] = None
+    vector_embedding: Optional[List[float]] = None
+    fork_count: int = 0
+    is_fork: bool = False
+    forked_at: Optional[datetime] = None
+    original_playbook_id: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+
+class PlaybookForkInfo(BaseModel):
+    """Information about a playbook fork"""
+    id:str
+    user_id: str
+    original_playbook_id: str
+    forked_at: datetime
+    version: str
+    
+
+
+class PlaybookDetailedResponse(BaseModel):
+    """Detailed playbook response with fork information"""
+    id: str
+    title: str
+    description: str
+    blog_content: Optional[str] = None
+    tags: List[str]
+    stage: Optional[str]
+    owner_id: str
+    version: str
+    files: Dict[str, str]
+    created_at: datetime
+    updated_at: datetime
+    summary: Optional[str] = None
+    vector_embedding: Optional[List[float]] = None
+    fork_count: int = 0
+    # forks: List[PlaybookForkInfo] = []
+    
+    class Config:
+        from_attributes = True
+
+
+class NotificationResponse(BaseModel):
+    """Notification response for fork events"""
+    type: str  # "fork", "update", etc.
+    message: str
+    playbook_id: str
+    playbook_title: str
+    user_id: str
+    user_email: str
+    user_full_name: str
+    created_at: datetime
+    is_read: bool = False
 
 
 class PlaybookUpdate(BaseModel):
@@ -97,7 +165,6 @@ class ProcessingStatus(BaseModel):
 
 class PlaybookForkRequest(BaseModel):
     playbook_id: str = Field(..., description="UUID of the playbook to fork")
-    user_id: str = Field(..., description="UUID of the user creating the fork")
 
 
 class PlaybookForkResponse(BaseModel):

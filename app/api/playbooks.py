@@ -7,7 +7,8 @@ from app.models.playbook import (
     PlaybookCreate, PlaybookResponse, PlaybookUpdate, 
     PlaybookSearch, PlaybookSearchResult, PlaybookUploadResponse,
     FileUpload, ProcessingStatus, PlaybookForkRequest, PlaybookForkResponse,
-    UserPlaybookResponse, PlaybookFileCreate, PlaybookFileResponse, PlaybookFileUpdate
+    UserPlaybookResponse, PlaybookFileCreate, PlaybookFileResponse, PlaybookFileUpdate,
+    PlaybookWithForkInfo, PlaybookDetailedResponse, NotificationResponse
 )
 from app.models.auth import TokenData
 from app.api.dependencies import get_current_user, get_optional_user, get_authenticated_user
@@ -87,7 +88,9 @@ async def upload_playbook(
             "description": description,
             "blog_content": blog_content,
             "tags": [],  # Will be calculated by LLM
-            "version": "v1",  # Hard coded as v1
+            "version": "v1",  # Initial version
+            "latest_version": 1,  # Initial version number
+            "current_version": 1,  # Initial version number
             "owner_id": current_user.user_id,
             "files": {},
             "summary": None,
@@ -148,7 +151,9 @@ async def upload_playbook(
                 "file_type": file_type,
                 "storage_path": file_url,
                 # "file_size": len(file_content),  # Temporarily removed due to missing column
-                "uploaded_by": current_user.user_id
+                "uploaded_by": current_user.user_id,
+                "version_created": 1,  # Initial version
+                "is_active": True
             })
         
         # Extract text content from files for vector storage (using stored content)
@@ -182,9 +187,9 @@ async def upload_playbook(
             )
         
         # Create playbook_files entries for all uploaded files
-        for file_data in playbook_files_data:
-            file_data["playbook_id"] = playbook["id"]
-            await supabase_service.create_playbook_file(file_data)
+        # for file_data in playbook_files_data:
+        #     file_data["playbook_id"] = playbook["id"]
+        #     await supabase_service.create_playbook_file(file_data)
         
         # Process files with AI synchronously to get tags and summary (fast response)
         print(f"🚀 Starting synchronous AI processing for {len(files_with_content)} files...")
@@ -459,7 +464,7 @@ async def get_my_playbooks(
     offset: int = 0,
     current_user: TokenData = Depends(get_authenticated_user)
 ):
-    """Get all playbooks owned by the authenticated user (for 'My Playbooks' functionality)"""
+    """Get playbooks owned by the current user"""
     try:
         user_id = current_user.user_id
         playbooks = await supabase_service.get_playbooks_by_user_detailed(user_id, limit, offset)
@@ -474,6 +479,144 @@ async def get_my_playbooks(
             cleaned_playbooks.append(PlaybookResponse(**playbook_copy))
         
         return cleaned_playbooks
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/my-playbooks-enhanced", response_model=List[PlaybookWithForkInfo])
+async def get_my_playbooks_enhanced(
+    limit: int = 50,
+    offset: int = 0,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Get playbooks owned by the current user with fork information"""
+    try:
+        user_id = current_user.user_id
+        playbooks = await supabase_service.get_playbooks_with_fork_info(user_id, limit, offset)
+        
+        # Remove vector_embedding from response to reduce payload size
+        cleaned_playbooks = []
+        for playbook in playbooks:
+            # Create a copy without vector_embedding
+            playbook_copy = playbook.copy()
+            if 'vector_embedding' in playbook_copy:
+                del playbook_copy['vector_embedding']
+            cleaned_playbooks.append(PlaybookWithForkInfo(**playbook_copy))
+        
+        return cleaned_playbooks
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/my-forks", response_model=List[PlaybookWithForkInfo])
+async def get_my_forks(
+    limit: int = 50,
+    offset: int = 0,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Get playbooks forked by the current user"""
+    try:
+        user_id = current_user.user_id
+        forked_playbooks = await supabase_service.get_user_playbooks_with_fork_info(user_id, limit, offset)
+        
+        # Remove vector_embedding from response to reduce payload size
+        cleaned_playbooks = []
+        for playbook in forked_playbooks:
+            # Create a copy without vector_embedding
+            playbook_copy = playbook.copy()
+            if 'vector_embedding' in playbook_copy:
+                del playbook_copy['vector_embedding']
+            cleaned_playbooks.append(PlaybookWithForkInfo(**playbook_copy))
+        
+        return cleaned_playbooks
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/my-playbooks-combined", response_model=List[PlaybookWithForkInfo])
+async def get_my_playbooks_combined(
+    limit: int = 50,
+    offset: int = 0,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Get both owned and forked playbooks for the current user"""
+    try:
+        user_id = current_user.user_id
+        combined_playbooks = await supabase_service.get_combined_user_playbooks(user_id, limit, offset)
+        
+        # Remove vector_embedding from response to reduce payload size
+        cleaned_playbooks = []
+        for playbook in combined_playbooks:
+            # Create a copy without vector_embedding
+            playbook_copy = playbook.copy()
+            if 'vector_embedding' in playbook_copy:
+                del playbook_copy['vector_embedding']
+            cleaned_playbooks.append(PlaybookWithForkInfo(**playbook_copy))
+        
+        return cleaned_playbooks
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/notifications", response_model=List[NotificationResponse])
+async def get_notifications(
+    limit: int = 20,
+    offset: int = 0,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Get notifications for the current user (fork events on their playbooks)"""
+    try:
+        user_id = current_user.user_id
+        notifications = await supabase_service.get_user_notifications(user_id, limit, offset)
+        
+        # Filter out any notifications with missing required fields
+        valid_notifications = []
+        for notification in notifications:
+            try:
+                # Validate that all required fields are present
+                if all([
+                    notification.get('playbook_id'),
+                    notification.get('playbook_title'),
+                    notification.get('user_id'),
+                    notification.get('user_email'),
+                    notification.get('user_full_name')
+                ]):
+                    valid_notifications.append(NotificationResponse(**notification))
+                else:
+                    print(f"Skipping invalid notification: {notification}")
+            except Exception as validation_error:
+                print(f"Validation error for notification: {validation_error}")
+                continue
+        
+        return valid_notifications
+    except Exception as e:
+        print(f"Error in get_notifications endpoint: {str(e)}")
+        # Return empty list instead of error to prevent API failure
+        return []
+
+
+@router.get("/notifications/count")
+async def get_notification_count(
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Get count of unread notifications for the current user"""
+    try:
+        user_id = current_user.user_id
+        count = await supabase_service.get_notification_count(user_id)
+        
+        return {"count": count}
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -498,6 +641,77 @@ async def get_playbook(playbook_id: str):
             del playbook_data['vector_embedding']
         
         return playbook_data
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/{playbook_id}/detailed", response_model=PlaybookDetailedResponse)
+async def get_playbook_detailed(playbook_id: str):
+    """Get a specific playbook with detailed fork information"""
+    try:
+        playbook = await supabase_service.get_playbook_detailed(playbook_id)
+        if not playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # Convert and exclude vector_embedding from response
+        playbook_data = convert_vector_embedding(playbook)
+        if 'vector_embedding' in playbook_data:
+            del playbook_data['vector_embedding']
+        
+        return PlaybookDetailedResponse(**playbook_data)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/{playbook_id}/forks")
+async def get_playbook_forks(
+    playbook_id: str,
+    limit: int = 20,
+    offset: int = 0
+):
+    """Get list of users who forked a specific playbook"""
+    try:
+        # Verify playbook exists
+        playbook = await supabase_service.get_playbook(playbook_id)
+        if not playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # Get fork information
+        forks = await supabase_service.get_playbook_forks(playbook_id, limit, offset)
+        
+        # Transform the response
+        fork_list = []
+        for fork in forks:
+            user_info = fork.get('users', {}) or {}
+            # Only include forks with valid user data
+            if user_info.get('id') and user_info.get('email'):
+                fork_info = {
+                    'user_id': user_info.get('id'),
+                    'user_email': user_info.get('email'),
+                    'user_full_name': user_info.get('full_name') or user_info.get('email'),
+                    'forked_at': fork['forked_at'],
+                    'version': fork['version']
+                }
+                fork_list.append(fork_info)
+        
+        return {
+            'playbook_id': playbook_id,
+            'playbook_title': playbook['title'],
+            'total_forks': len(fork_list),
+            'forks': fork_list
+        }
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -875,37 +1089,72 @@ async def fork_playbook(
 ):
     """Fork a playbook to user's workspace"""
     try:
-        # Step 1: Validate input
-        # Use current authenticated user's ID
+        # Step 1: Validate input and get user ID from authentication
         user_id = current_user.user_id
-        user_exists = await supabase_service.validate_user_exists(user_id)
-        if not user_exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
+        playbook_id = fork_request.playbook_id
         
-        # Validate original playbook exists
-        original_playbook = await supabase_service.get_playbook(fork_request.playbook_id)
+        print(f"🍴 Forking playbook {playbook_id} for user: {user_id}")
+        
+        # Step 2: Validate original playbook exists
+        original_playbook = await supabase_service.get_playbook(playbook_id)
         if not original_playbook:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Original playbook not found"
             )
         
-        # Check if user already forked this playbook
+        # Step 3: Check if user is trying to fork their own playbook
+        if original_playbook["owner_id"] == user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You cannot fork your own playbook"
+            )
+        
+        # Step 4: Check if user already forked this playbook
         existing_forks = await supabase_service.get_user_playbooks(user_id)
         for fork in existing_forks:
-            if fork['original_playbook_id'] == fork_request.playbook_id:
+            if fork['original_playbook_id'] == playbook_id:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail="User has already forked this playbook"
+                    detail="You have already forked this playbook"
                 )
         
-        # Step 2: Create new user playbook entry
+        # Step 5: Get latest version for forking
+        from app.services.version_service import version_service
+        latest_version = await version_service.get_latest_version_for_fork(playbook_id)
+        
+        # Step 6: Create new playbook record in playbooks table
+        new_playbook_data = {
+            "title": original_playbook["title"],
+            "description": original_playbook["description"],
+            "blog_content": original_playbook.get("blog_content"),
+            "tags": original_playbook.get("tags", []),
+            "stage": original_playbook.get("stage"),
+            "owner_id": user_id,  # New owner is the forking user
+            "version": f"v{latest_version}",  # Use the latest version from step 5
+            "files": {},  # Will be populated with copied files
+            "summary": original_playbook.get("summary"),
+            "vector_embedding": original_playbook.get("vector_embedding"),
+            "is_fork": True,
+            "original_playbook_id": playbook_id
+        }
+        
+        # Create the new playbook record
+        new_playbook = await supabase_service.create_playbook(new_playbook_data)
+        
+        if not new_playbook:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create new playbook record"
+            )
+        
+        print(f"✅ Created new playbook record with ID: {new_playbook['id']}")
+        
+        # Step 7: Create new user playbook entry with version info
         user_playbook = await supabase_service.create_user_playbook_fork(
             user_id=user_id,
-            original_playbook_id=fork_request.playbook_id,
+            original_playbook_id=new_playbook['id'],
+            base_version=latest_version,  # Fork from latest version
             license=original_playbook.get('license')
         )
         
@@ -915,21 +1164,57 @@ async def fork_playbook(
                 detail="Failed to create playbook fork"
             )
         
-        # Step 3: Copy files to user_playbook_files
-        original_files = await supabase_service.get_playbook_files(fork_request.playbook_id)
+        # Step 8: Copy files to both new playbook and user_playbook_files with version tracking
+        original_files = await version_service.get_version_files(playbook_id, latest_version)
         
         if original_files:
-            copied_files = await supabase_service.copy_playbook_files(
-                user_playbook_id=user_playbook['id'],
-                original_files=original_files
+            # Copy files to the new playbook record
+            copied_playbook_files = await supabase_service.copy_playbook_files_to_new_playbook(
+                new_playbook_id=new_playbook['id'],
+                original_files=original_files,
+                user_id=user_id
             )
+            print(f"✅ Copied {len(copied_playbook_files)} files to new playbook")
+            
+            # Update the new playbook with files information
+            files_dict = {}
+            for file_data in copied_playbook_files:
+                files_dict[file_data['file_name']] = file_data['storage_path']
+            
+            # Update playbook with files information
+            await supabase_service.update_playbook(new_playbook['id'], {
+                "files": files_dict
+            })
+            
+            # Copy files to user_playbook_files for fork tracking
+            copied_fork_files = await supabase_service.copy_playbook_files_with_version(
+                user_playbook_id=user_playbook['id'],
+                original_files=original_files,
+                version_number=1  # Start with version 1 for fork
+            )
+            print(f"✅ Copied {len(copied_fork_files)} files to fork tracking")
+        else:
+            print("⚠️ No files found to copy to fork")
         
-        # Generate playbook URL (you might want to adjust this based on your frontend routing)
-        new_playbook_url = f"/user-playbooks/{user_playbook['id']}"
+        # Step 9: Create notification for original playbook owner
+        try:
+            await supabase_service.create_fork_notification(
+                original_playbook_id=playbook_id,
+                forking_user_id=user_id,
+                fork_id=user_playbook['id']
+            )
+        except Exception as notification_error:
+            print(f"⚠️ Failed to create fork notification: {notification_error}")
+            # Don't fail the fork if notification fails
+        
+        # Step 10: Generate playbook URL for redirect (use new playbook ID)
+        new_playbook_url = f"/playbooks/{new_playbook['id']}"
+        
+        print(f"✅ Successfully forked playbook '{original_playbook['title']}' to {new_playbook_url}")
         
         return PlaybookForkResponse(
             status="success",
-            new_playbook_id=user_playbook['id'],
+            new_playbook_id=new_playbook['id'],  # Return the new playbook ID
             new_playbook_url=new_playbook_url,
             message=f"Successfully forked playbook '{original_playbook['title']}'"
         )
@@ -937,6 +1222,7 @@ async def fork_playbook(
     except HTTPException:
         raise
     except Exception as e:
+        print(f"❌ Fork error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fork playbook: {str(e)}"
@@ -1590,5 +1876,378 @@ async def delete_playbook_file(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete playbook file: {str(e)}"
+        )
+
+
+@router.get("/{playbook_id}/fork-info")
+async def get_playbook_fork_info(
+    playbook_id: str,
+    current_user: Optional[TokenData] = Depends(get_optional_user)
+):
+    """Get fork information for a specific playbook"""
+    try:
+        # Verify playbook exists
+        playbook = await supabase_service.get_playbook(playbook_id)
+        if not playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # Get fork count
+        fork_count = await supabase_service.get_playbook_fork_count(playbook_id)
+        
+        # Get recent forks (last 5)
+        recent_forks = await supabase_service.get_playbook_forks(playbook_id, limit=5)
+        
+        # Check if current user has forked this playbook
+        user_fork_info = None
+        if current_user:
+            user_forks = await supabase_service.get_user_playbooks(current_user.user_id)
+            for fork in user_forks:
+                if fork['original_playbook_id'] == playbook_id:
+                    user_fork_info = {
+                        'fork_id': fork['id'],
+                        'forked_at': fork['forked_at'],
+                        'version': fork['version'],
+                        'status': fork['status']
+                    }
+                    break
+        
+        # Check if user can fork this playbook
+        can_fork = True
+        if current_user:
+            # Can't fork own playbook
+            if playbook['owner_id'] == current_user.user_id:
+                can_fork = False
+            # Can't fork if already forked
+            elif user_fork_info:
+                can_fork = False
+        
+        return {
+            'playbook_id': playbook_id,
+            'playbook_title': playbook['title'],
+            'total_forks': fork_count,
+            'recent_forks': recent_forks,
+            'user_fork': user_fork_info,
+            'can_fork': can_fork,
+            'is_owner': current_user and playbook['owner_id'] == current_user.user_id
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.post("/user-playbooks/{user_playbook_id}/sync")
+async def sync_fork_with_original(
+    user_playbook_id: str,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Sync a fork with the latest version of the original playbook"""
+    try:
+        # Get user playbook
+        user_playbook = await supabase_service.get_user_playbook(user_playbook_id)
+        if not user_playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User playbook not found"
+            )
+        
+        # Check if user owns this fork
+        if user_playbook['user_id'] != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to sync this fork"
+            )
+        
+        # Get original playbook
+        original_playbook = await supabase_service.get_playbook(user_playbook['original_playbook_id'])
+        if not original_playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Original playbook not found"
+            )
+        
+        # Get current versions
+        from app.services.version_service import version_service
+        original_latest_version = await version_service.get_current_version(original_playbook['id'])
+        fork_current_version = user_playbook.get('base_version', 1)
+        
+        # Check if sync is needed
+        if fork_current_version >= original_latest_version:
+            return {
+                "message": "Fork is already up to date",
+                "fork_version": fork_current_version,
+                "original_version": original_latest_version,
+                "sync_needed": False
+            }
+        
+        # Get new files from original playbook
+        new_files = await version_service.get_version_files(original_playbook['id'], original_latest_version)
+        
+        # Copy new files to fork
+        if new_files:
+            copied_files = await supabase_service.copy_playbook_files_with_version(
+                user_playbook_id=user_playbook_id,
+                original_files=new_files,
+                version_number=original_latest_version
+            )
+        else:
+            copied_files = []
+        
+        # Update fork version
+        update_data = {
+            'base_version': original_latest_version,
+            'last_sync_version': original_latest_version,
+            'last_updated_at': datetime.utcnow().isoformat()
+        }
+        
+        updated_fork = await supabase_service.update_user_playbook(user_playbook_id, update_data)
+        
+        return {
+            "message": f"Successfully synced fork with original playbook version {original_latest_version}",
+            "fork_version": original_latest_version,
+            "original_version": original_latest_version,
+            "sync_needed": False,
+            "files_copied": len(copied_files)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to sync fork: {str(e)}"
+        )
+
+
+@router.get("/user-playbooks/{user_playbook_id}/sync-status")
+async def get_fork_sync_status(
+    user_playbook_id: str,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Check if a fork is behind the original playbook"""
+    try:
+        # Get user playbook
+        user_playbook = await supabase_service.get_user_playbook(user_playbook_id)
+        if not user_playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User playbook not found"
+            )
+        
+        # Check if user owns this fork
+        if user_playbook['user_id'] != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this fork"
+            )
+        
+        # Get original playbook
+        original_playbook = await supabase_service.get_playbook(user_playbook['original_playbook_id'])
+        if not original_playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Original playbook not found"
+            )
+        
+        # Get current versions
+        from app.services.version_service import version_service
+        original_latest_version = await version_service.get_current_version(original_playbook['id'])
+        fork_current_version = user_playbook.get('base_version', 1)
+        
+        # Check if fork is behind
+        is_behind = fork_current_version < original_latest_version
+        versions_behind = original_latest_version - fork_current_version if is_behind else 0
+        
+        return {
+            "fork_id": user_playbook_id,
+            "original_playbook_id": original_playbook['id'],
+            "original_playbook_title": original_playbook['title'],
+            "fork_version": fork_current_version,
+            "original_version": original_latest_version,
+            "is_behind": is_behind,
+            "versions_behind": versions_behind,
+            "sync_needed": is_behind
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get sync status: {str(e)}"
+        )
+
+
+@router.delete("/user-playbooks/{user_playbook_id}")
+async def delete_fork(
+    user_playbook_id: str,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Delete a fork"""
+    try:
+        # Get user playbook
+        user_playbook = await supabase_service.get_user_playbook(user_playbook_id)
+        if not user_playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User playbook not found"
+            )
+        
+        # Check if user owns this fork
+        if user_playbook['user_id'] != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to delete this fork"
+            )
+        
+        # Delete all files from storage
+        user_playbook_files = await supabase_service.get_user_playbook_files(user_playbook_id)
+        for file_data in user_playbook_files:
+            try:
+                # Extract file path from storage URL
+                storage_path = file_data['storage_path']
+                if storage_path.startswith('http'):
+                    path_parts = storage_path.split('/')
+                    bucket_index = next(i for i, part in enumerate(path_parts) if part == settings.storage_bucket_name)
+                    file_path = '/'.join(path_parts[bucket_index + 1:])
+                else:
+                    file_path = storage_path
+                
+                # Delete from storage
+                await supabase_service.delete_file_from_storage(file_path)
+            except Exception as file_error:
+                print(f"Warning: Failed to delete file {file_data.get('file_path')}: {file_error}")
+        
+        # Delete user playbook files from database
+        await supabase_service.delete_user_playbook_files(user_playbook_id)
+        
+        # Delete user playbook entry
+        await supabase_service.delete_user_playbook(user_playbook_id)
+        
+        return {
+            "message": "Fork deleted successfully",
+            "deleted_fork_id": user_playbook_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete fork: {str(e)}"
+        )
+
+
+@router.post("/user-playbooks/{user_playbook_id}/files")
+async def upload_fork_file(
+    user_playbook_id: str,
+    file: UploadFile = File(...),
+    file_path: Optional[str] = Form(None),
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Upload a file to a fork"""
+    try:
+        # Get user playbook
+        user_playbook = await supabase_service.get_user_playbook(user_playbook_id)
+        if not user_playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User playbook not found"
+            )
+        
+        # Check if user owns this fork
+        if user_playbook['user_id'] != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to upload files to this fork"
+            )
+        
+        # Read file content
+        file_content = await file.read()
+        
+        # Determine file type from extension
+        file_extension = file.filename.split('.')[-1].lower() if '.' in file.filename else 'txt'
+        file_type = file_extension if file_extension in ['md', 'pdf', 'csv', 'docx', 'txt'] else 'txt'
+        
+        # Determine content type
+        content_type_map = {
+            'pdf': 'application/pdf',
+            'md': 'text/markdown',
+            'txt': 'text/plain',
+            'csv': 'text/csv',
+            'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        }
+        content_type = content_type_map.get(file_extension, 'application/octet-stream')
+        
+        # Generate storage path
+        if file_path:
+            storage_path = f"user_playbooks/{user_playbook_id}/{file_path}"
+            file_name = file_path
+        else:
+            storage_path = f"user_playbooks/{user_playbook_id}/{file.filename}"
+            file_name = file.filename
+        
+        # Upload file to storage
+        storage_url = await supabase_service.upload_file_to_storage(storage_path, file_content, content_type)
+        
+        # Create file entry in database
+        file_data = {
+            "id": str(uuid.uuid4()),
+            "user_playbook_id": user_playbook_id,
+            "file_path": file_name,  # Relative path within the playbook
+            "file_type": file_type,
+            "storage_path": storage_url,  # Full storage URL
+            "version": "v1",
+            "version_created": 1,
+            "is_active": True
+        }
+        
+        # Try to add timestamp fields if they exist
+        try:
+            file_data.update({
+                "uploaded_at": datetime.utcnow().isoformat(),
+                "last_modified_at": datetime.utcnow().isoformat()
+            })
+            
+            response = supabase_service.client.table("user_playbook_files").insert(file_data).execute()
+            if not response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to create file entry"
+                )
+                
+        except Exception as timestamp_error:
+            # If timestamp columns don't exist, try without them
+            print(f"Timestamp columns not available, trying without: {str(timestamp_error)}")
+            
+            # Remove timestamp fields and try again
+            file_data.pop("uploaded_at", None)
+            file_data.pop("last_modified_at", None)
+            
+            response = supabase_service.client.table("user_playbook_files").insert(file_data).execute()
+            if not response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to create file entry"
+                )
+        
+        return {
+            "message": "File uploaded successfully",
+            "file_id": response.data[0]['id'],
+            "file_name": file_name,
+            "file_type": file_type,
+            "storage_url": storage_url
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload file: {str(e)}"
         )
 

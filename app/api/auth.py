@@ -103,6 +103,7 @@ async def login(user_data: UserLogin):
         )
         
         return Token(
+            user_id=user["id"],
             access_token=access_token,
             token_type="bearer",
             expires_in=auth_service.access_token_expire_minutes * 60
