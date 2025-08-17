@@ -36,9 +36,10 @@ async def setup_database():
         
         # Read SQL files
         sql_files = [
-            "database/setup.sql",
-            "database/fork_tables_setup.sql", 
-            "database/pr_workflow_setup.sql"
+            # "database/setup.sql",
+            # "database/profile_schema.sql",
+            # "database/fork_tables_setup.sql", 
+            # "database/pr_workflow_setup.sql"
         ]
         
         for sql_file in sql_files:
@@ -72,6 +73,7 @@ async def setup_database():
         print("🔍 Verifying table setup...")
         tables_to_verify = [
             "users",
+            "profiles",
             "playbooks", 
             "playbook_files",
             "user_playbooks",
