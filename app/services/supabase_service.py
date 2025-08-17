@@ -105,6 +105,52 @@ class SupabaseService:
         except Exception as e:
             raise Exception(f"Failed to get playbooks: {str(e)}")
     
+    async def get_playbooks_by_user_detailed(self, user_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get playbooks by user with detailed information including file counts and processing status"""
+        try:
+            # Get playbooks with file counts using a join
+            response = self.client.table("playbooks").select("""
+                *,
+                playbook_files!playbook_files_playbook_id_fkey (
+                    id,
+                    file_name,
+                    file_type
+                )
+            """).eq("owner_id", user_id).range(offset, offset + limit - 1).execute()
+            
+            # Process the results to add file counts and processing status
+            detailed_playbooks = []
+            for playbook in response.data:
+                # Count files
+                file_count = len(playbook.get("playbook_files", []))
+                
+                # Determine processing status
+                has_summary = bool(playbook.get("summary"))
+                has_embedding = bool(playbook.get("vector_embedding"))
+                
+                if has_summary and has_embedding:
+                    processing_status = "completed"
+                elif has_summary or has_embedding:
+                    processing_status = "processing"
+                else:
+                    processing_status = "processing"
+                
+                # Add additional metadata
+                playbook["file_count"] = file_count
+                playbook["processing_status"] = processing_status
+                playbook["has_summary"] = has_summary
+                playbook["has_embedding"] = has_embedding
+                
+                # Remove the detailed file list to keep response size manageable
+                if "playbook_files" in playbook:
+                    del playbook["playbook_files"]
+                
+                detailed_playbooks.append(playbook)
+            
+            return detailed_playbooks
+        except Exception as e:
+            raise Exception(f"Failed to get detailed playbooks by user: {str(e)}")
+    
     async def update_playbook(self, playbook_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Update a playbook"""
         try:
@@ -132,7 +178,7 @@ class SupabaseService:
                 "match_playbooks",
                 {
                     "query_embedding": query_embedding,
-                    "match_threshold": 0.7,
+                    "match_threshold": 0.3,
                     "match_count": limit
                 }
             ).execute()

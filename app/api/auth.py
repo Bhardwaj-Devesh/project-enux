@@ -1,8 +1,10 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from datetime import timedelta
 from app.models.auth import UserRegister, UserLogin, UserResponse, UserResponseWithToken, Token
+from app.models.profile import ProfileUpdate
 from app.services.auth_service import auth_service
 from app.services.supabase_service import supabase_service
+from app.services.profile_service import profile_service
 from app.api.dependencies import get_current_user
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -32,6 +34,25 @@ async def register(user_data: UserRegister):
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to create user"
             )
+        
+        # Create profile entry for the new user
+        try:
+            # Create initial profile data with full name
+            profile_data = ProfileUpdate(
+                full_name=user_data.full_name
+            )
+            
+            # Create profile in database (username will be extracted from email in service)
+            await profile_service.create_or_update_profile(
+                user_id=user["id"],
+                profile_data=profile_data,
+                email=user_data.email
+            )
+            
+        except Exception as profile_error:
+            # Log the error but don't fail registration
+            print(f"Warning: Failed to create profile for user {user['id']}: {str(profile_error)}")
+            # Continue with registration even if profile creation fails
         
         # Create access token for the new user
         access_token_expires = timedelta(minutes=auth_service.access_token_expire_minutes)

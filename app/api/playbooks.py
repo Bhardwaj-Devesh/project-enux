@@ -108,10 +108,11 @@ async def upload_playbook(
                     detail=f"File type {file.content_type} not allowed"
                 )
             
-            # Generate unique file path
+            # Generate unique file path with new structure: playbook/{{user_id}}/version/filename
             file_id = str(uuid.uuid4())
             file_extension = settings.file_extensions.get(file.content_type, "")
-            file_path = f"{file_id}{file_extension}"
+            # New folder structure: playbook/{{user_id}}/version/filename
+            file_path = f"playbook/{current_user.user_id}/v1/{file_id}{file_extension}"
             
             # Read file content once and store it
             file_content = await file.read()
@@ -452,7 +453,35 @@ async def get_playbooks(
         )
 
 
-@router.get("/{playbook_id}", response_model=PlaybookResponse)
+@router.get("/my-playbooks", response_model=List[PlaybookResponse])
+async def get_my_playbooks(
+    limit: int = 50,
+    offset: int = 0,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Get all playbooks owned by the authenticated user (for 'My Playbooks' functionality)"""
+    try:
+        user_id = current_user.user_id
+        playbooks = await supabase_service.get_playbooks_by_user_detailed(user_id, limit, offset)
+        
+        # Remove vector_embedding from response to reduce payload size
+        cleaned_playbooks = []
+        for playbook in playbooks:
+            # Create a copy without vector_embedding
+            playbook_copy = playbook.copy()
+            if 'vector_embedding' in playbook_copy:
+                del playbook_copy['vector_embedding']
+            cleaned_playbooks.append(PlaybookResponse(**playbook_copy))
+        
+        return cleaned_playbooks
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/{playbook_id}")
 async def get_playbook(playbook_id: str):
     """Get a specific playbook"""
     try:
@@ -462,7 +491,13 @@ async def get_playbook(playbook_id: str):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Playbook not found"
             )
-        return PlaybookResponse(**convert_vector_embedding(playbook))
+        
+        # Convert and exclude vector_embedding from response
+        playbook_data = convert_vector_embedding(playbook)
+        if 'vector_embedding' in playbook_data:
+            del playbook_data['vector_embedding']
+        
+        return playbook_data
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1286,14 +1321,14 @@ async def upload_playbook_file(
         
         file_type = type_mapping.get(file_extension, 'txt')  # Default fallback to txt
         
-        # Generate storage path
+        # Generate storage path with new structure: playbook/{{user_id}}/version/filename
         if file_path:
             # Use provided file path (preserving folder structure)
-            storage_path = f"playbooks/{playbook_id}/{file_path}"
+            storage_path = f"playbook/{current_user.user_id}/v1/{file_path}"
             file_name = file_path
         else:
-            # Use original filename
-            storage_path = f"playbooks/{playbook_id}/{file.filename}"
+            # Use original filename with new folder structure
+            storage_path = f"playbook/{current_user.user_id}/v1/{file.filename}"
             file_name = file.filename
         
         # Upload file to Supabase Storage
