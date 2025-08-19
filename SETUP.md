@@ -316,4 +316,4 @@ For issues and questions:
 2. Create a feature branch
 3. Make your changes
 4. Add tests
-5. Submit a pull request 
+5. Test the API endpoints 

@@ -99,6 +99,7 @@ class PlaybookDetailedResponse(BaseModel):
     summary: Optional[str] = None
     vector_embedding: Optional[List[float]] = None
     fork_count: int = 0
+    current_version_id: str
     # forks: List[PlaybookForkInfo] = []
     
     class Config:

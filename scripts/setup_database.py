@@ -79,7 +79,8 @@ async def setup_database():
             "user_playbooks",
             "user_playbook_files",
             "pull_requests",
-            "pull_request_files"
+            "playbook_versions",
+            "pull_request_events"
         ]
         
         for table in tables_to_verify:

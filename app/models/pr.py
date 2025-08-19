@@ -2,164 +2,209 @@
 Pydantic models for Pull Request workflow
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
 
 
-class ChangeType(str, Enum):
-    ADDED = "added"
-    MODIFIED = "modified"
-    DELETED = "deleted"
-
-
 class PRStatus(str, Enum):
-    OPEN = "open"
-    CLOSED = "closed"
-    MERGED = "merged"
-    DRAFT = "draft"
+    """Pull request status enum"""
+    OPEN = "OPEN"
+    MERGED = "MERGED"
+    DECLINED = "DECLINED"
+    CLOSED = "CLOSED"
 
 
-class FileChangeRequest(BaseModel):
-    """Individual file change in a PR request"""
-    file_path: str = Field(..., description="Path to the file being changed")
-    content: Optional[str] = Field(None, description="New file content (for text files)")
-    change_type: ChangeType = Field(..., description="Type of change")
+class DiffFormat(str, Enum):
+    """Diff format enum"""
+    UNIFIED = "unified"
+    SIDE_BY_SIDE = "side-by-side"
+    HTML = "html"
 
 
-class PRCreateRequest(BaseModel):
+class CreatePullRequestRequest(BaseModel):
     """Request to create a new pull request"""
-    fork_id: str = Field(..., description="UUID of the user playbook (fork)")
     title: str = Field(..., min_length=1, max_length=200, description="PR title")
-    description: Optional[str] = Field(None, description="PR description")
-    commit_message: str = Field(..., min_length=1, description="Commit message describing changes")
-    file_changes: List[FileChangeRequest] = Field(..., description="List of file changes")
+    description: Optional[str] = Field(None, max_length=2000, description="PR description")
+    new_blog_text: str = Field(..., description="New blog content")
+    base_version_id: str = Field(..., description="Base version ID for conflict detection")
 
 
-class PRCreateFromZipRequest(BaseModel):
-    """Request to create PR from uploaded ZIP file"""
-    fork_id: str = Field(..., description="UUID of the user playbook (fork)")
-    title: str = Field(..., min_length=1, max_length=200, description="PR title")
-    description: Optional[str] = Field(None, description="PR description")
-    commit_message: str = Field(..., min_length=1, description="Commit message describing changes")
+class MergePullRequestRequest(BaseModel):
+    """Request to merge a pull request"""
+    message: str = Field(..., min_length=1, max_length=500, description="Merge commit message")
 
 
-class FileChangeAnalysis(BaseModel):
-    """AI analysis of a single file change"""
-    file_path: str
-    changelog: str = Field(..., description="One-line summary of the change")
-    risk_flags: List[str] = Field(default_factory=list, description="Identified risk categories")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="AI confidence score")
-
-
-class PRAnalysis(BaseModel):
-    """Overall AI analysis of the pull request"""
-    pr_title: str = Field(..., description="AI-generated PR title")
-    pr_description: str = Field(..., description="AI-generated PR description")
-    high_risks: List[str] = Field(default_factory=list, description="High-risk items requiring attention")
-    merge_checklist: List[str] = Field(default_factory=list, description="Suggested merge checklist")
-
-
-class FileChangeDetail(BaseModel):
-    """Detailed information about a file change"""
+class PullRequestResponse(BaseModel):
+    """Response model for pull request operations"""
     id: str
-    file_path: str
-    change_type: ChangeType
-    main_file_id: Optional[str]
-    fork_file_id: Optional[str]
-    diff_text: Optional[str]
-    diff_summary: Optional[str]
-    risk_flags: List[str]
-    confidence: Optional[float]
-    checksum_old: Optional[str]
-    checksum_new: Optional[str]
-    created_at: datetime
-
-
-class PRResponse(BaseModel):
-    """Response model for pull request operations - comprehensive schema"""
-    id: str
-    fork_id: str
-    user_id: str
-    target_playbook_id: str
+    playbook_id: str
+    author_id: str
+    base_version_id: str
     title: str
     description: Optional[str]
-    commit_message: str
+    old_blog_text: str
+    new_blog_text: str
+    unified_diff: Optional[str]
     status: PRStatus
-    file_changes: List[Dict[str, Any]]  # JSONB array of file changes
-    summary: Optional[str]  # AI-generated title
-    change_summary: Optional[str]  # AI-generated description
-    diff_summary: Optional[str]  # AI per-file diff summary
-    risk_flags: List[str]
-    merge_checklist: List[str]
     created_at: datetime
     updated_at: datetime
     merged_at: Optional[datetime]
-    closed_at: Optional[datetime]
+    merged_by: Optional[str]
+    merge_message: Optional[str]
+    new_version_id: Optional[str]
     
-    # Related data
-    file_details: Optional[List[FileChangeDetail]] = None
-    
-    class Config:
-        from_attributes = True
+    # Additional fields for UI
+    author_name: Optional[str] = None
+    playbook_title: Optional[str] = None
+    base_version_number: Optional[int] = None
+    new_version_number: Optional[int] = None
 
 
-class PRPreview(BaseModel):
-    """Preview of a PR before creation"""
-    title: str
-    description: str
-    target_playbook_id: str
-    target_playbook_title: str
-    fork_info: Dict[str, Any]
-    file_changes_summary: List[Dict[str, str]]
-    ai_analysis: Optional[PRAnalysis]
-    sync_required: bool
-    can_create: bool
-    issues: List[str] = Field(default_factory=list)
-
-
-class SyncStatus(BaseModel):
-    """Status of fork synchronization"""
-    fork_id: str
-    is_behind: bool
-    base_version: int
-    master_latest_version: int
-    last_sync_version: int
-    files_to_sync: List[Dict[str, Any]] = Field(default_factory=list)
-    conflicts: List[Dict[str, Any]] = Field(default_factory=list)
-
-
-class SyncRequest(BaseModel):
-    """Request to sync a fork with master"""
-    fork_id: str = Field(..., description="UUID of the user playbook (fork)")
-    auto_resolve_conflicts: bool = Field(False, description="Automatically resolve non-conflicting changes")
-
-
-class SyncResponse(BaseModel):
-    """Response after fork synchronization"""
-    fork_id: str
-    success: bool
-    synced_files: List[str]
-    conflicts_resolved: List[str]
-    remaining_conflicts: List[Dict[str, Any]]
-    new_sync_version: int
-    message: str
-
-
-class PRListRequest(BaseModel):
+class PullRequestListRequest(BaseModel):
     """Request parameters for listing pull requests"""
-    playbook_id: Optional[str] = None
-    user_id: Optional[str] = None
     status: Optional[PRStatus] = None
     limit: int = Field(20, ge=1, le=100)
     offset: int = Field(0, ge=0)
 
 
-class PRListResponse(BaseModel):
+class PullRequestListResponse(BaseModel):
     """Response for listing pull requests"""
-    pull_requests: List[PRResponse]
+    pull_requests: List[PullRequestResponse]
     total_count: int
-    limit: int
-    offset: int
     has_more: bool
+
+
+class DiffResponse(BaseModel):
+    """Response for diff operations"""
+    unified_diff: str
+    side_by_side_diff: Optional[Dict[str, Any]] = None
+    html_diff: Optional[str] = None
+    format: DiffFormat
+
+
+class PullRequestDetailResponse(BaseModel):
+    """Detailed pull request response with diff"""
+    pull_request: PullRequestResponse
+    diff: Optional[DiffResponse] = None
+
+
+class MergeResponse(BaseModel):
+    """Response for merge operations"""
+    status: str
+    new_version_id: str
+    version_number: int
+    message: str
+
+
+class ConflictResponse(BaseModel):
+    """Response for merge conflicts"""
+    has_conflicts: bool = True
+    conflicts: List[Dict[str, Any]]
+    current_version_id: str
+    base_version_id: str
+    message: str
+
+
+class PullRequestEvent(BaseModel):
+    """Pull request event model"""
+    id: str
+    pr_id: str
+    event_type: str
+    actor_id: str
+    actor_name: Optional[str] = None
+    metadata: Dict[str, Any]
+    created_at: datetime
+
+
+class PlaybookVersionResponse(BaseModel):
+    """Response model for playbook versions"""
+    id: str
+    playbook_id: str
+    version_number: int
+    blog_text: str
+    content_hash: str
+    source: str
+    pr_id: Optional[str]
+    created_by: str
+    created_at: datetime
+    created_by_name: Optional[str] = None
+
+
+class CreatePullRequestResponse(BaseModel):
+    """Response for creating a pull request"""
+    pull_request: PullRequestResponse
+    message: str
+
+
+class UpdatePullRequestRequest(BaseModel):
+    """Request to update a pull request"""
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    description: Optional[str] = Field(None, max_length=2000)
+    new_blog_text: Optional[str] = None
+
+
+class PullRequestStats(BaseModel):
+    """Pull request statistics"""
+    total_prs: int
+    open_prs: int
+    merged_prs: int
+    declined_prs: int
+    closed_prs: int
+
+
+class PlaybookPRInfo(BaseModel):
+    """Information about PRs for a playbook"""
+    playbook_id: str
+    playbook_title: str
+    current_version_id: str
+    current_version_number: int
+    total_prs: int
+    open_prs: int
+    can_create_pr: bool
+    is_owner: bool
+
+
+# Validation models
+class PullRequestFilters(BaseModel):
+    """Filters for pull request queries"""
+    status: Optional[PRStatus] = None
+    author_id: Optional[str] = None
+    playbook_id: Optional[str] = None
+    created_after: Optional[datetime] = None
+    created_before: Optional[datetime] = None
+
+
+class PullRequestSort(BaseModel):
+    """Sorting options for pull requests"""
+    field: str = Field("created_at", pattern="^(created_at|updated_at|title|status)$")
+    order: str = Field("desc", pattern="^(asc|desc)$")
+
+
+# Utility models for internal operations
+class DiffHunk(BaseModel):
+    """Represents a diff hunk"""
+    old_start: int
+    old_lines: int
+    new_start: int
+    new_lines: int
+    content: List[str]
+
+
+class DiffResult(BaseModel):
+    """Result of diff operation"""
+    hunks: List[DiffHunk]
+    unified_diff: str
+    has_changes: bool
+    lines_added: int
+    lines_removed: int
+
+
+class MergeResult(BaseModel):
+    """Result of merge operation"""
+    success: bool
+    new_version_id: Optional[str] = None
+    version_number: Optional[int] = None
+    conflicts: Optional[List[Dict[str, Any]]] = None
+    message: str

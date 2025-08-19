@@ -484,91 +484,6 @@ class SupabaseService:
         except Exception as e:
             raise Exception(f"Failed to delete file from storage: {str(e)}")
     
-    # ==========================================
-    # Pull Request Methods
-    # ==========================================
-    
-    async def create_pull_request(self, pr_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new pull request"""
-        try:
-            pr_id = str(uuid.uuid4())
-            pr_data["id"] = pr_id
-            pr_data["created_at"] = datetime.utcnow().isoformat()
-            pr_data["updated_at"] = datetime.utcnow().isoformat()
-            
-            response = self.client.table("pull_requests").insert(pr_data).execute()
-            return response.data[0] if response.data else None
-        except Exception as e:
-            raise Exception(f"Failed to create pull request: {str(e)}")
-    
-    async def get_pull_request(self, pr_id: str) -> Optional[Dict[str, Any]]:
-        """Get pull request by ID"""
-        try:
-            response = self.client.table("pull_requests").select("*").eq("id", pr_id).execute()
-            return response.data[0] if response.data else None
-        except Exception as e:
-            raise Exception(f"Failed to get pull request: {str(e)}")
-    
-    async def update_pull_request(self, pr_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Update a pull request"""
-        try:
-            update_data["updated_at"] = datetime.utcnow().isoformat()
-            response = self.client.table("pull_requests").update(update_data).eq("id", pr_id).execute()
-            return response.data[0] if response.data else None
-        except Exception as e:
-            raise Exception(f"Failed to update pull request: {str(e)}")
-    
-    async def list_pull_requests(
-        self, 
-        playbook_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        status: Optional[str] = None,
-        limit: int = 20,
-        offset: int = 0
-    ) -> List[Dict[str, Any]]:
-        """List pull requests with optional filters"""
-        try:
-            query = self.client.table("pull_requests").select("*")
-            
-            if playbook_id:
-                query = query.eq("target_playbook_id", playbook_id)
-            if user_id:
-                query = query.eq("user_id", user_id)
-            if status:
-                query = query.eq("status", status)
-            
-            query = query.order("created_at", desc=True).limit(limit).offset(offset)
-            
-            response = query.execute()
-            return response.data
-        except Exception as e:
-            raise Exception(f"Failed to list pull requests: {str(e)}")
-    
-    async def create_pull_request_file(self, file_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a pull request file record with comprehensive schema"""
-        try:
-            file_id = str(uuid.uuid4())
-            file_data["id"] = file_id
-            file_data["created_at"] = datetime.utcnow().isoformat()
-            
-            # Ensure required fields are present with defaults
-            file_data.setdefault("change_type", "modified")
-            file_data.setdefault("risk_flags", [])
-            file_data.setdefault("confidence", 0.8)
-            
-            response = self.client.table("pull_request_files").insert(file_data).execute()
-            return response.data[0] if response.data else None
-        except Exception as e:
-            raise Exception(f"Failed to create pull request file: {str(e)}")
-    
-    async def get_pull_request_files(self, pr_id: str) -> List[Dict[str, Any]]:
-        """Get all files for a pull request"""
-        try:
-            response = self.client.table("pull_request_files").select("*").eq("pr_id", pr_id).execute()
-            return response.data
-        except Exception as e:
-            raise Exception(f"Failed to get pull request files: {str(e)}")
-    
     async def get_user_playbook_file_by_path(self, user_playbook_id: str, file_path: str) -> Optional[Dict[str, Any]]:
         """Get user playbook file by file path"""
         try:
@@ -1179,6 +1094,125 @@ class SupabaseService:
         except Exception as e:
             print(f"Error creating fork notification: {str(e)}")
             return False
+
+    # ==========================================
+    # Pull Request Methods
+    # ==========================================
+    
+    async def get_playbook_version(self, version_id: str) -> Optional[Dict[str, Any]]:
+        """Get playbook version by ID"""
+        try:
+            response = self.client.table("playbook_versions").select("*").eq("id", version_id).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            print(f"Error getting playbook version: {str(e)}")
+            return None
+    
+    async def get_playbook_versions(self, playbook_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get all versions of a playbook"""
+        try:
+            response = self.client.table("playbook_versions").select("*").eq("playbook_id", playbook_id).order("version_number", desc=True).range(offset, offset + limit - 1).execute()
+            return response.data or []
+        except Exception as e:
+            print(f"Error getting playbook versions: {str(e)}")
+            return []
+    
+    async def create_playbook_version(self, version_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Create a new playbook version"""
+        try:
+            version_id = str(uuid.uuid4())
+            version_data["id"] = version_id
+            version_data["created_at"] = datetime.utcnow().isoformat()
+            
+            response = self.client.table("playbook_versions").insert(version_data).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            print(f"Error creating playbook version: {str(e)}")
+            return None
+    
+    async def get_pull_request(self, pr_id: str) -> Optional[Dict[str, Any]]:
+        """Get pull request by ID"""
+        try:
+            response = self.client.table("pull_requests").select("*").eq("id", pr_id).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            print(f"Error getting pull request: {str(e)}")
+            return None
+    
+    async def get_pull_requests_by_playbook(self, playbook_id: str, status: Optional[str] = None, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get pull requests for a playbook"""
+        try:
+            query = self.client.table("pull_requests").select("*").eq("playbook_id", playbook_id)
+            
+            if status:
+                query = query.eq("status", status)
+            
+            response = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+            return response.data or []
+        except Exception as e:
+            print(f"Error getting pull requests: {str(e)}")
+            return []
+    
+    async def get_pull_requests_by_user(self, user_id: str, status: Optional[str] = None, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get pull requests created by a user"""
+        try:
+            query = self.client.table("pull_requests").select("*").eq("author_id", user_id)
+            
+            if status:
+                query = query.eq("status", status)
+            
+            response = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+            return response.data or []
+        except Exception as e:
+            print(f"Error getting user pull requests: {str(e)}")
+            return []
+    
+    async def create_pull_request(self, pr_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Create a new pull request"""
+        try:
+            pr_id = str(uuid.uuid4())
+            pr_data["id"] = pr_id
+            pr_data["created_at"] = datetime.utcnow().isoformat()
+            pr_data["updated_at"] = datetime.utcnow().isoformat()
+            
+            response = self.client.table("pull_requests").insert(pr_data).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            print(f"Error creating pull request: {str(e)}")
+            return None
+    
+    async def update_pull_request(self, pr_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Update a pull request"""
+        try:
+            update_data["updated_at"] = datetime.utcnow().isoformat()
+            
+            response = self.client.table("pull_requests").update(update_data).eq("id", pr_id).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            print(f"Error updating pull request: {str(e)}")
+            return None
+    
+    async def get_pull_request_events(self, pr_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get events for a pull request"""
+        try:
+            response = self.client.table("pull_request_events").select("*").eq("pr_id", pr_id).order("created_at", desc=True).limit(limit).execute()
+            return response.data or []
+        except Exception as e:
+            print(f"Error getting pull request events: {str(e)}")
+            return []
+    
+    async def create_pull_request_event(self, event_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Create a pull request event"""
+        try:
+            event_id = str(uuid.uuid4())
+            event_data["id"] = event_id
+            event_data["created_at"] = datetime.utcnow().isoformat()
+            
+            response = self.client.table("pull_request_events").insert(event_data).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            print(f"Error creating pull request event: {str(e)}")
+            return None
 
 
 # Global instance

@@ -2,363 +2,301 @@
 Pull Request API endpoints
 """
 
-from fastapi import APIRouter, HTTPException, status, Depends, UploadFile, File, Form
-from typing import List, Optional
-import json
-import tempfile
-import zipfile
-import os
-
+from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from typing import Optional, List
 from app.models.pr import (
-    PRCreateRequest, PRCreateFromZipRequest, PRResponse, PRPreview,
-    SyncStatus, SyncRequest, SyncResponse, PRListRequest, PRListResponse
+    CreatePullRequestRequest, PullRequestResponse, PullRequestListRequest,
+    PullRequestListResponse, DiffResponse, MergeResponse, ConflictResponse,
+    PullRequestEvent, PlaybookVersionResponse, CreatePullRequestResponse,
+    UpdatePullRequestRequest, PullRequestStats, PlaybookPRInfo, DiffFormat,
+    PRStatus
 )
-from app.models.auth import TokenData
-from app.api.dependencies import get_current_user, get_authenticated_user
 from app.services.pr_service import pr_service
+from app.api.dependencies import get_current_user
+from app.models.auth import TokenData
 
-router = APIRouter(prefix="/pull-requests", tags=["pull-requests"])
+router = APIRouter(prefix="/pull-requests", tags=["Pull Requests"])
 
 
-@router.post("/", response_model=PRResponse)
+@router.post("/playbooks/{playbook_id}/pull-requests", response_model=CreatePullRequestResponse)
 async def create_pull_request(
-    pr_request: PRCreateRequest,
-    current_user: TokenData = Depends(get_authenticated_user)
+    playbook_id: str = Path(..., description="Target playbook ID"),
+    request: CreatePullRequestRequest = None,
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
-    Create a new pull request with file changes
+    Create a new pull request for a playbook
     
-    This endpoint handles the complete PR workflow:
-    1. Validates and authorizes the request
-    2. Checks if fork is behind master (requires sync if so)
-    3. Generates diffs for all file changes
-    4. Uses AI to analyze changes and generate summaries
-    5. Persists the PR and returns preview
+    - **playbook_id**: Target playbook ID
+    - **title**: PR title (1-200 characters)
+    - **description**: Optional PR description (max 2000 characters)
+    - **new_blog_text**: New blog content
+    - **base_version_id**: Base version ID for conflict detection
     """
     try:
-        pr_response = await pr_service.create_pull_request(
-            pr_request=pr_request,
-            user_id=current_user.user_id
+        result = await pr_service.create_pull_request(
+            playbook_id=playbook_id,
+            author_id=current_user.user_id,
+            request=request
         )
-        
-        return pr_response
-    
+        return result
     except Exception as e:
-        if "fork is behind" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(e)
-            )
-        elif "not authorized" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=str(e)
-            )
+        if "Base version is outdated" in str(e):
+            raise HTTPException(status_code=409, detail=str(e))
+        elif "Playbook not found" in str(e):
+            raise HTTPException(status_code=404, detail="Playbook not found")
         else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create pull request: {str(e)}"
-            )
+            raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/from-zip", response_model=PRResponse)
-async def create_pull_request_from_zip(
-    fork_id: str = Form(...),
-    title: str = Form(...),
-    commit_message: str = Form(...),
-    description: Optional[str] = Form(None),
-    zip_file: UploadFile = File(...),
-    current_user: TokenData = Depends(get_authenticated_user)
-):
-    """
-    Create a pull request by uploading a ZIP file with changes
-    
-    The ZIP file should contain the updated files in their intended structure.
-    Each file will be compared against the current fork version.
-    """
-    try:
-        # Validate ZIP file
-        if not zip_file.filename.endswith('.zip'):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only ZIP files are allowed"
-            )
-        
-        # Read and extract ZIP content
-        zip_content = await zip_file.read()
-        
-        with tempfile.TemporaryDirectory() as temp_dir:
-            zip_path = os.path.join(temp_dir, "upload.zip")
-            
-            # Save ZIP file
-            with open(zip_path, 'wb') as f:
-                f.write(zip_content)
-            
-            # Extract and process files
-            file_changes = []
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                for file_path in zip_ref.namelist():
-                    # Skip directories
-                    if file_path.endswith('/'):
-                        continue
-                    
-                    # Read file content
-                    file_content = zip_ref.read(file_path).decode('utf-8')
-                    
-                    # Determine change type (for now, assume all are modifications)
-                    # TODO: Implement more sophisticated change detection
-                    file_changes.append({
-                        "file_path": file_path,
-                        "content": file_content,
-                        "change_type": "modified"
-                    })
-        
-        # Create PR request
-        pr_request = PRCreateRequest(
-            fork_id=fork_id,
-            title=title,
-            description=description,
-            commit_message=commit_message,
-            file_changes=file_changes
-        )
-        
-        # Create PR
-        pr_response = await pr_service.create_pull_request(
-            pr_request=pr_request,
-            user_id=current_user.user_id
-        )
-        
-        return pr_response
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create pull request from ZIP: {str(e)}"
-        )
-
-
-@router.get("/{pr_id}", response_model=PRResponse)
-async def get_pull_request(
-    pr_id: str,
-    current_user: TokenData = Depends(get_authenticated_user)
-):
-    """
-    Get pull request details including file changes and AI analysis
-    
-    Users can view PRs they created or PRs targeting playbooks they own.
-    """
-    try:
-        pr_response = await pr_service.get_pull_request(
-            pr_id=pr_id,
-            user_id=current_user.user_id
-        )
-        
-        return pr_response
-    
-    except Exception as e:
-        if "not found" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=str(e)
-            )
-        elif "not authorized" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=str(e)
-            )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to get pull request: {str(e)}"
-            )
-
-
-@router.get("/", response_model=PRListResponse)
+@router.get("/playbooks/{playbook_id}/pull-requests", response_model=PullRequestListResponse)
 async def list_pull_requests(
-    playbook_id: Optional[str] = None,
-    status: Optional[str] = None,
-    limit: int = 20,
-    offset: int = 0,
-    current_user: TokenData = Depends(get_authenticated_user)
+    playbook_id: str = Path(..., description="Playbook ID"),
+    status: Optional[PRStatus] = Query(None, description="Filter by PR status"),
+    limit: int = Query(20, ge=1, le=100, description="Number of PRs to return"),
+    offset: int = Query(0, ge=0, description="Number of PRs to skip"),
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
-    List pull requests with optional filters
+    List pull requests for a playbook
     
-    Users see PRs they created and PRs targeting their playbooks.
+    - **playbook_id**: Playbook ID
+    - **status**: Optional filter by PR status (OPEN, MERGED, DECLINED, CLOSED)
+    - **limit**: Number of PRs to return (1-100)
+    - **offset**: Number of PRs to skip for pagination
     """
     try:
-        # Get PRs created by user
-        user_prs = await pr_service.list_pull_requests(
-            user_id=current_user.user_id,
-            playbook_id=playbook_id,
-            status=status,
-            limit=limit,
-            offset=offset
-        )
-        
-        # Get PRs targeting user's playbooks
-        owned_prs = await pr_service.list_pull_requests_for_owner(
-            owner_id=current_user.user_id,
-            playbook_id=playbook_id,
-            status=status,
-            limit=limit,
-            offset=offset
-        )
-        
-        # Combine and deduplicate
-        all_prs = user_prs + [pr for pr in owned_prs if pr not in user_prs]
-        
-        # Sort by created_at desc
-        all_prs.sort(key=lambda x: x.created_at, reverse=True)
-        
-        # Apply pagination to combined results
-        paginated_prs = all_prs[offset:offset + limit]
-        
-        return PRListResponse(
-            pull_requests=paginated_prs,
-            total_count=len(all_prs),
-            limit=limit,
-            offset=offset,
-            has_more=offset + limit < len(all_prs)
-        )
-    
+        request = PullRequestListRequest(status=status, limit=limit, offset=offset)
+        result = await pr_service.list_pull_requests(playbook_id, request)
+        return result
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list pull requests: {str(e)}"
-        )
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/{pr_id}/merge")
-async def merge_pull_request(
-    pr_id: str,
-    current_user: TokenData = Depends(get_authenticated_user)
+@router.get("/{pr_id}", response_model=PullRequestResponse)
+async def get_pull_request(
+    pr_id: str = Path(..., description="Pull request ID"),
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
-    Merge a pull request (only by playbook owner)
+    Get pull request details by ID
     
-    This applies all changes from the PR to the master playbook.
+    - **pr_id**: Pull request ID
     """
     try:
-        # TODO: Implement merge functionality
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Merge functionality coming soon"
-        )
-    
+        pr = await pr_service.get_pull_request(pr_id)
+        if not pr:
+            raise HTTPException(status_code=404, detail="Pull request not found")
+        return pr
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to merge pull request: {str(e)}"
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{pr_id}/diff", response_model=DiffResponse)
+async def get_pull_request_diff(
+    pr_id: str = Path(..., description="Pull request ID"),
+    format: DiffFormat = Query(DiffFormat.UNIFIED, description="Diff format"),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Get diff for a pull request
+    
+    - **pr_id**: Pull request ID
+    - **format**: Diff format (unified, side-by-side, html)
+    """
+    try:
+        diff = await pr_service.get_pull_request_diff(pr_id, format)
+        if not diff:
+            raise HTTPException(status_code=404, detail="Pull request not found")
+        return diff
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{pr_id}/merge", response_model=MergeResponse)
+async def merge_pull_request(
+    pr_id: str = Path(..., description="Pull request ID"),
+    merge_message: str = Query(..., min_length=1, max_length=500, description="Merge commit message"),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Merge a pull request (owner only)
+    
+    - **pr_id**: Pull request ID
+    - **merge_message**: Merge commit message (1-500 characters)
+    """
+    try:
+        result = await pr_service.merge_pull_request(
+            pr_id=pr_id,
+            merged_by=current_user.user_id,
+            merge_message=merge_message
         )
+        return result
+    except Exception as e:
+        if "Only playbook owner can merge" in str(e):
+            raise HTTPException(status_code=403, detail="Only playbook owner can merge pull requests")
+        elif "Pull request not found" in str(e):
+            raise HTTPException(status_code=404, detail="Pull request not found")
+        elif "Pull request is not open" in str(e):
+            raise HTTPException(status_code=400, detail="Pull request is not open")
+        elif "Merge conflicts detected" in str(e):
+            raise HTTPException(status_code=409, detail="Merge conflicts detected. Manual resolution required.")
+        else:
+            raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{pr_id}/decline")
+async def decline_pull_request(
+    pr_id: str = Path(..., description="Pull request ID"),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Decline a pull request (owner only)
+    
+    - **pr_id**: Pull request ID
+    """
+    try:
+        result = await pr_service.decline_pull_request(pr_id, current_user.user_id)
+        return result
+    except Exception as e:
+        if "Only playbook owner can decline" in str(e):
+            raise HTTPException(status_code=403, detail="Only playbook owner can decline pull requests")
+        elif "Pull request not found" in str(e):
+            raise HTTPException(status_code=404, detail="Pull request not found")
+        elif "Pull request is not open" in str(e):
+            raise HTTPException(status_code=400, detail="Pull request is not open")
+        else:
+            raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/{pr_id}/close")
 async def close_pull_request(
-    pr_id: str,
-    current_user: TokenData = Depends(get_authenticated_user)
+    pr_id: str = Path(..., description="Pull request ID"),
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
-    Close a pull request without merging
+    Close a pull request (author or owner)
     
-    Can be done by PR creator or playbook owner.
+    - **pr_id**: Pull request ID
     """
     try:
-        # TODO: Implement close functionality
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Close functionality coming soon"
-        )
-    
-    except HTTPException:
-        raise
+        result = await pr_service.close_pull_request(pr_id, current_user.user_id)
+        return result
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to close pull request: {str(e)}"
-        )
-
-
-# Fork Sync Endpoints
-
-@router.get("/forks/{fork_id}/sync-status", response_model=SyncStatus)
-async def get_sync_status(
-    fork_id: str,
-    current_user: TokenData = Depends(get_authenticated_user)
-):
-    """
-    Check if a fork is behind master and needs synchronization
-    
-    Returns version information and files that need updating.
-    """
-    try:
-        sync_status = await pr_service.check_sync_status(
-            fork_id=fork_id,
-            user_id=current_user.user_id
-        )
-        
-        return sync_status
-    
-    except Exception as e:
-        if "not found" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=str(e)
-            )
-        elif "not authorized" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=str(e)
-            )
+        if "Only author or playbook owner can close" in str(e):
+            raise HTTPException(status_code=403, detail="Only author or playbook owner can close pull requests")
+        elif "Pull request not found" in str(e):
+            raise HTTPException(status_code=404, detail="Pull request not found")
+        elif "Pull request is not open" in str(e):
+            raise HTTPException(status_code=400, detail="Pull request is not open")
         else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to get sync status: {str(e)}"
-            )
+            raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/forks/{fork_id}/sync", response_model=SyncResponse)
-async def sync_fork(
-    fork_id: str,
-    sync_request: SyncRequest,
-    current_user: TokenData = Depends(get_authenticated_user)
+@router.get("/playbooks/{playbook_id}/stats", response_model=PullRequestStats)
+async def get_pull_request_stats(
+    playbook_id: str = Path(..., description="Playbook ID"),
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
-    Synchronize a fork with the master playbook
+    Get pull request statistics for a playbook
     
-    This updates the fork with changes from master since last sync.
+    - **playbook_id**: Playbook ID
     """
     try:
-        # Validate fork_id matches request
-        if sync_request.fork_id != fork_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Fork ID in path and request body must match"
-            )
-        
-        sync_result = await pr_service.sync_fork(
-            fork_id=fork_id,
-            user_id=current_user.user_id
-        )
-        
-        return SyncResponse(
-            fork_id=fork_id,
-            success=sync_result["success"],
-            synced_files=sync_result.get("synced_files", []),
-            conflicts_resolved=sync_result.get("conflicts_resolved", []),
-            remaining_conflicts=sync_result.get("remaining_conflicts", []),
-            new_sync_version=sync_result.get("new_sync_version", 1),
-            message=sync_result.get("message", "Sync completed")
-        )
+        stats = await pr_service.get_pull_request_stats(playbook_id)
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/playbooks/{playbook_id}/info", response_model=PlaybookPRInfo)
+async def get_playbook_pr_info(
+    playbook_id: str = Path(..., description="Playbook ID"),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Get PR information for a playbook
     
+    - **playbook_id**: Playbook ID
+    """
+    try:
+        info = await pr_service.get_playbook_pr_info(playbook_id, current_user.user_id)
+        return info
+    except Exception as e:
+        if "Playbook not found" in str(e):
+            raise HTTPException(status_code=404, detail="Playbook not found")
+        else:
+            raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/playbooks/{playbook_id}/versions", response_model=List[PlaybookVersionResponse])
+async def get_playbook_versions(
+    playbook_id: str = Path(..., description="Playbook ID"),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Get all versions of a playbook
+    
+    - **playbook_id**: Playbook ID
+    """
+    try:
+        # This method needs to be added to the PR service
+        # For now, we'll return a placeholder
+        raise HTTPException(status_code=501, detail="Not implemented yet")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to sync fork: {str(e)}"
-        )
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# Additional utility endpoints
+
+@router.get("/user/{user_id}/pull-requests", response_model=PullRequestListResponse)
+async def get_user_pull_requests(
+    user_id: str = Path(..., description="User ID"),
+    status: Optional[PRStatus] = Query(None, description="Filter by PR status"),
+    limit: int = Query(20, ge=1, le=100, description="Number of PRs to return"),
+    offset: int = Query(0, ge=0, description="Number of PRs to skip"),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Get pull requests created by a user
+    
+    - **user_id**: User ID
+    - **status**: Optional filter by PR status
+    - **limit**: Number of PRs to return (1-100)
+    - **offset**: Number of PRs to skip for pagination
+    """
+    try:
+        # This would need to be implemented in the service
+        # For now, we'll return a placeholder
+        raise HTTPException(status_code=501, detail="Not implemented yet")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{pr_id}/events", response_model=List[PullRequestEvent])
+async def get_pull_request_events(
+    pr_id: str = Path(..., description="Pull request ID"),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Get events for a pull request
+    
+    - **pr_id**: Pull request ID
+    """
+    try:
+        # This would need to be implemented in the service
+        # For now, we'll return a placeholder
+        raise HTTPException(status_code=501, detail="Not implemented yet")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

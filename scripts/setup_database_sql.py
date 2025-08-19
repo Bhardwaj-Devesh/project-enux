@@ -101,9 +101,7 @@ async def setup_database():
             "playbooks", 
             "playbook_files",
             "user_playbooks",
-            "user_playbook_files",
-            "pull_requests",
-            "pull_request_files"
+            "user_playbook_files"
         ]
         
         for table in tables_to_verify:

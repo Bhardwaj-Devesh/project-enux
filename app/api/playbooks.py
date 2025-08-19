@@ -1134,7 +1134,7 @@ async def fork_playbook(
             "version": f"v{latest_version}",  # Use the latest version from step 5
             "files": {},  # Will be populated with copied files
             "summary": original_playbook.get("summary"),
-            "vector_embedding": original_playbook.get("vector_embedding"),
+            # "vector_embedding": original_playbook.get("vector_embedding"),
             "is_fork": True,
             "original_playbook_id": playbook_id
         }
