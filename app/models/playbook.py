@@ -29,6 +29,8 @@ class PlaybookResponse(BaseModel):
     updated_at: datetime
     summary: Optional[str] = None
     vector_embedding: Optional[List[float]] = None
+    star_count: int = 0
+    view_count: int = 0
     
     @classmethod
     def from_orm(cls, obj):
@@ -64,6 +66,8 @@ class PlaybookWithForkInfo(BaseModel):
     updated_at: datetime
     summary: Optional[str] = None
     vector_embedding: Optional[List[float]] = None
+    star_count: int = 0
+    view_count: int = 0
     fork_count: int = 0
     is_fork: bool = False
     forked_at: Optional[datetime] = None
@@ -75,7 +79,7 @@ class PlaybookWithForkInfo(BaseModel):
 
 class PlaybookForkInfo(BaseModel):
     """Information about a playbook fork"""
-    id:str
+    id: str
     user_id: str
     original_playbook_id: str
     forked_at: datetime
@@ -98,8 +102,10 @@ class PlaybookDetailedResponse(BaseModel):
     updated_at: datetime
     summary: Optional[str] = None
     vector_embedding: Optional[List[float]] = None
+    star_count: int = 0
+    view_count: int = 0
     fork_count: int = 0
-    current_version_id: str
+    current_version_id: Optional[str] = None
     # forks: List[PlaybookForkInfo] = []
     
     class Config:
@@ -108,15 +114,20 @@ class PlaybookDetailedResponse(BaseModel):
 
 class NotificationResponse(BaseModel):
     """Notification response for fork events"""
+    id: str
     type: str  # "fork", "update", etc.
+    title: str
     message: str
     playbook_id: str
     playbook_title: str
     user_id: str
     user_email: str
     user_full_name: str
-    created_at: datetime
+    fork_id: Optional[str] = None
     is_read: bool = False
+    read_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class PlaybookUpdate(BaseModel):
@@ -166,6 +177,55 @@ class ProcessingStatus(BaseModel):
 
 class PlaybookForkRequest(BaseModel):
     playbook_id: str = Field(..., description="UUID of the playbook to fork")
+
+
+class PlaybookStarRequest(BaseModel):
+    playbook_id: str = Field(..., description="UUID of the playbook to star/unstar")
+
+
+class PlaybookStarResponse(BaseModel):
+    playbook_id: str
+    starred: bool
+    star_count: int
+    message: str
+
+
+class PlaybookViewRequest(BaseModel):
+    playbook_id: str = Field(..., description="UUID of the playbook being viewed")
+
+
+class PlaybookViewResponse(BaseModel):
+    playbook_id: str
+    view_count: int
+    message: str
+
+
+class PopularPlaybookResponse(BaseModel):
+    playbook_id: str
+    title: str
+    description: str
+    star_count: int
+    view_count: int
+    created_at: datetime
+
+
+class MarkNotificationsReadRequest(BaseModel):
+    notification_ids: List[str] = Field(..., description="List of notification IDs to mark as read")
+
+
+class MarkNotificationsReadResponse(BaseModel):
+    updated_count: int
+    message: str
+
+
+class MarkAllNotificationsReadResponse(BaseModel):
+    updated_count: int
+    message: str
+
+
+class NotificationCountResponse(BaseModel):
+    unread_count: int
+    total_count: int
 
 
 class PlaybookForkResponse(BaseModel):

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, status, Depends, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse
 from typing import List, Optional, Dict, Any
 import uuid
@@ -8,7 +8,10 @@ from app.models.playbook import (
     PlaybookSearch, PlaybookSearchResult, PlaybookUploadResponse,
     FileUpload, ProcessingStatus, PlaybookForkRequest, PlaybookForkResponse,
     UserPlaybookResponse, PlaybookFileCreate, PlaybookFileResponse, PlaybookFileUpdate,
-    PlaybookWithForkInfo, PlaybookDetailedResponse, NotificationResponse
+    PlaybookWithForkInfo, PlaybookDetailedResponse, NotificationResponse,
+    PlaybookStarRequest, PlaybookStarResponse, PlaybookViewRequest, PlaybookViewResponse,
+    PopularPlaybookResponse, MarkNotificationsReadRequest, MarkNotificationsReadResponse,
+    MarkAllNotificationsReadResponse, NotificationCountResponse
 )
 from app.models.auth import TokenData
 from app.api.dependencies import get_current_user, get_optional_user, get_authenticated_user
@@ -607,16 +610,16 @@ async def get_notifications(
         return []
 
 
-@router.get("/notifications/count")
+@router.get("/notifications/count", response_model=NotificationCountResponse)
 async def get_notification_count(
     current_user: TokenData = Depends(get_authenticated_user)
 ):
-    """Get count of unread notifications for the current user"""
+    """Get notification count for the current user"""
     try:
         user_id = current_user.user_id
-        count = await supabase_service.get_notification_count(user_id)
+        count_data = await supabase_service.get_notification_count(user_id)
         
-        return {"count": count}
+        return NotificationCountResponse(**count_data)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -624,8 +627,42 @@ async def get_notification_count(
         )
 
 
+@router.get("/popular", response_model=List[PopularPlaybookResponse])
+async def get_popular_playbooks(
+    limit: int = 10,
+    current_user: Optional[TokenData] = Depends(get_optional_user)
+):
+    """Get most popular playbooks"""
+    try:
+        popular_playbooks = await supabase_service.get_popular_playbooks(limit)
+        
+        # Transform the response to match PopularPlaybookResponse model
+        response_playbooks = []
+        for playbook_data in popular_playbooks:
+            popular_response = PopularPlaybookResponse(
+                playbook_id=playbook_data['id'],
+                title=playbook_data['title'],
+                description=playbook_data['description'],
+                star_count=playbook_data['star_count'],
+                view_count=playbook_data['view_count'],
+                created_at=playbook_data['created_at']
+            )
+            response_playbooks.append(popular_response)
+        
+        return response_playbooks
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
 @router.get("/{playbook_id}")
-async def get_playbook(playbook_id: str):
+async def get_playbook(
+    playbook_id: str,
+    current_user: Optional[TokenData] = Depends(get_optional_user),
+    request: Request = None
+):
     """Get a specific playbook"""
     try:
         playbook = await supabase_service.get_playbook(playbook_id)
@@ -634,6 +671,20 @@ async def get_playbook(playbook_id: str):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Playbook not found"
             )
+        
+        # Record view (in background to avoid blocking the response)
+        try:
+            # Record the view asynchronously
+            import asyncio
+            asyncio.create_task(
+                supabase_service.record_playbook_view(
+                    playbook_id=playbook_id,
+                    user_id=current_user.user_id if current_user else None
+                )
+            )
+        except Exception as view_error:
+            # Don't fail the request if view recording fails
+            print(f"Warning: Failed to record view for playbook {playbook_id}: {view_error}")
         
         # Convert and exclude vector_embedding from response
         playbook_data = convert_vector_embedding(playbook)
@@ -2250,4 +2301,164 @@ async def upload_fork_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload file: {str(e)}"
         )
+
+
+# Star and View Count Endpoints
+
+@router.post("/{playbook_id}/star", response_model=PlaybookStarResponse)
+async def star_playbook(
+    playbook_id: str,
+    star_request: PlaybookStarRequest,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Star a playbook (simple approach - just increments count)"""
+    try:
+        # Verify playbook exists
+        playbook = await supabase_service.get_playbook(playbook_id)
+        if not playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # Star the playbook
+        result = await supabase_service.star_playbook(playbook_id, current_user.user_id)
+        
+        return PlaybookStarResponse(**result)
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.delete("/{playbook_id}/star", response_model=PlaybookStarResponse)
+async def unstar_playbook(
+    playbook_id: str,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Unstar a playbook (simple approach - just decrements count)"""
+    try:
+        # Verify playbook exists
+        playbook = await supabase_service.get_playbook(playbook_id)
+        if not playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # Unstar the playbook
+        result = await supabase_service.unstar_playbook(playbook_id, current_user.user_id)
+        
+        return PlaybookStarResponse(**result)
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.post("/{playbook_id}/view", response_model=PlaybookViewResponse)
+async def record_playbook_view(
+    playbook_id: str,
+    view_request: PlaybookViewRequest,
+    current_user: Optional[TokenData] = Depends(get_optional_user)
+):
+    """Record a view for a playbook"""
+    try:
+        # Verify playbook exists
+        playbook = await supabase_service.get_playbook(playbook_id)
+        if not playbook:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Playbook not found"
+            )
+        
+        # Record the view
+        result = await supabase_service.record_playbook_view(
+            playbook_id=playbook_id,
+            user_id=current_user.user_id if current_user else None
+        )
+        
+        return PlaybookViewResponse(**result)
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+# Notification Management Endpoints
+
+@router.post("/notifications/mark-read", response_model=MarkNotificationsReadResponse)
+async def mark_notifications_read(
+    request: MarkNotificationsReadRequest,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Mark specific notifications as read"""
+    try:
+        user_id = current_user.user_id
+        updated_count = await supabase_service.mark_notifications_read(
+            user_id, request.notification_ids
+        )
+        
+        return MarkNotificationsReadResponse(
+            updated_count=updated_count,
+            message=f"Successfully marked {updated_count} notifications as read"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.post("/notifications/mark-all-read", response_model=MarkAllNotificationsReadResponse)
+async def mark_all_notifications_read(
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Mark all notifications as read for the current user"""
+    try:
+        user_id = current_user.user_id
+        updated_count = await supabase_service.mark_all_notifications_read(user_id)
+        
+        return MarkAllNotificationsReadResponse(
+            updated_count=updated_count,
+            message=f"Successfully marked all {updated_count} notifications as read"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.delete("/notifications/{notification_id}")
+async def delete_notification(
+    notification_id: str,
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Delete a specific notification"""
+    try:
+        user_id = current_user.user_id
+        success = await supabase_service.delete_notification(user_id, notification_id)
+        
+        if success:
+            return {"message": "Notification deleted successfully"}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Notification not found or access denied"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
 
