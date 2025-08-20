@@ -76,6 +76,16 @@ class PRService:
         # Create event
         await self._create_pr_event(pr_record['id'], 'created', author_id)
         
+        # Create notification for playbook owner
+        try:
+            await supabase_service.create_pr_created_notification(
+                pr_id=pr_record['id'],
+                playbook_id=playbook_id,
+                pr_author_id=author_id
+            )
+        except Exception as notification_error:
+            print(f"⚠️ Failed to create PR creation notification: {notification_error}")
+        
         # Get enhanced PR response
         pr_response = await self._get_enhanced_pr_response(pr_record)
         
@@ -205,6 +215,17 @@ class PRService:
             "merge_message": merge_message
         })
         
+        # Create notification for PR author
+        try:
+            await supabase_service.create_pr_merge_notification(
+                pr_id=pr_id,
+                playbook_id=pr.playbook_id,
+                merged_by=merged_by,
+                pr_author_id=pr.author_id
+            )
+        except Exception as notification_error:
+            print(f"⚠️ Failed to create merge notification: {notification_error}")
+        
         return MergeResponse(
             status="MERGED",
             new_version_id=result['new_version_id'],
@@ -239,6 +260,17 @@ class PRService:
         # Create event
         await self._create_pr_event(pr_id, 'declined', declined_by)
         
+        # Create notification for PR author
+        try:
+            await supabase_service.create_pr_decline_notification(
+                pr_id=pr_id,
+                playbook_id=pr.playbook_id,
+                declined_by=declined_by,
+                pr_author_id=pr.author_id
+            )
+        except Exception as notification_error:
+            print(f"⚠️ Failed to create decline notification: {notification_error}")
+        
         return {"status": "DECLINED"}
     
     async def close_pull_request(self, pr_id: str, closed_by: str) -> Dict[str, Any]:
@@ -270,6 +302,17 @@ class PRService:
         
         # Create event
         await self._create_pr_event(pr_id, 'closed', closed_by)
+        
+        # Create notification for PR author (only if closed by someone else)
+        try:
+            await supabase_service.create_pr_close_notification(
+                pr_id=pr_id,
+                playbook_id=pr.playbook_id,
+                closed_by=closed_by,
+                pr_author_id=pr.author_id
+            )
+        except Exception as notification_error:
+            print(f"⚠️ Failed to create close notification: {notification_error}")
         
         return {"status": "CLOSED"}
     

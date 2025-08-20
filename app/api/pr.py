@@ -3,7 +3,7 @@ Pull Request API endpoints
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from app.models.pr import (
     CreatePullRequestRequest, PullRequestResponse, PullRequestListRequest,
     PullRequestListResponse, DiffResponse, MergeResponse, ConflictResponse,
@@ -14,6 +14,7 @@ from app.models.pr import (
 from app.services.pr_service import pr_service
 from app.api.dependencies import get_current_user
 from app.models.auth import TokenData
+from app.services.supabase_service import supabase_service
 
 router = APIRouter(prefix="/pull-requests", tags=["Pull Requests"])
 
@@ -300,3 +301,31 @@ async def get_pull_request_events(
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/test-pr-notifications", response_model=Dict[str, Any])
+async def test_pr_notifications(
+    current_user: TokenData = Depends(get_current_user)
+):
+    """Test endpoint to verify PR notifications functionality"""
+    try:
+        # Test PR merge notification
+        test_result = await supabase_service.create_pr_merge_notification(
+            pr_id="test-pr-id",
+            playbook_id="test-playbook-id", 
+            merged_by=current_user.user_id,
+            pr_author_id=current_user.user_id
+        )
+        
+        return {
+            "success": True,
+            "message": "PR notification test completed",
+            "test_result": test_result
+        }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"PR notification test failed: {str(e)}",
+            "error_type": type(e).__name__
+        }

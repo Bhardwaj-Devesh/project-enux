@@ -92,8 +92,6 @@ async def upload_playbook(
             "blog_content": blog_content,
             "tags": [],  # Will be calculated by LLM
             "version": "v1",  # Initial version
-            "latest_version": 1,  # Initial version number
-            "current_version": 1,  # Initial version number
             "owner_id": current_user.user_id,
             "files": {},
             "summary": None,
@@ -188,6 +186,39 @@ async def upload_playbook(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to create playbook"
             )
+        
+        # Create initial version and update playbook with current_version_id
+        try:
+            # Create initial version record
+            initial_blog_text = blog_content or "Initial playbook content"
+            version_data = {
+                "playbook_id": playbook["id"],
+                "version_number": 1,
+                "blog_text": initial_blog_text,
+                "content_hash": "initial_hash",  # Will be updated by database function
+                "source": "manual",
+                "created_by": current_user.user_id
+            }
+            
+            # Use the database function to create version (this handles content_hash and updates playbook)
+            response = supabase_service.client.rpc(
+                "create_playbook_version",
+                {
+                    "p_playbook_id": playbook["id"],
+                    "p_blog_text": initial_blog_text,
+                    "p_source": "manual",
+                    "p_created_by": current_user.user_id
+                }
+            ).execute()
+            
+            if response.data:
+                print(f"✅ Created initial version {response.data} for playbook {playbook['id']}")
+            else:
+                print(f"⚠️ Failed to create initial version for playbook {playbook['id']}")
+                
+        except Exception as version_error:
+            print(f"⚠️ Failed to create initial version: {version_error}")
+            # Continue with the upload process even if version creation fails
         
         # Create playbook_files entries for all uploaded files
         # for file_data in playbook_files_data:
@@ -2460,5 +2491,50 @@ async def delete_notification(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
+
+
+@router.post("/test-notifications", response_model=Dict[str, Any])
+async def test_notifications(
+    current_user: TokenData = Depends(get_authenticated_user)
+):
+    """Test endpoint to verify notifications functionality"""
+    try:
+        # Test if notifications table exists and can be accessed
+        test_notification = {
+            "recipient_id": current_user.user_id,
+            "type": "test",
+            "title": "Test Notification",
+            "message": "This is a test notification to verify the system is working",
+            "playbook_id": None,
+            "playbook_title": None,
+            "user_id": current_user.user_id,
+            "user_email": "test@example.com",
+            "user_full_name": "Test User",
+            "is_read": False
+        }
+        
+        response = supabase_service.client.table("notifications").insert(test_notification).execute()
+        
+        if response.data:
+            # Clean up the test notification
+            supabase_service.client.table("notifications").delete().eq("id", response.data[0]['id']).execute()
+            
+            return {
+                "success": True,
+                "message": "Notifications table is working correctly",
+                "test_notification_id": response.data[0]['id']
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Failed to create test notification"
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Notifications test failed: {str(e)}",
+            "error_type": type(e).__name__
+        }
 
 

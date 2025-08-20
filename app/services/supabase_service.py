@@ -1145,6 +1145,242 @@ class SupabaseService:
             print(f"Error creating fork notification: {str(e)}")
             return False
 
+    async def create_pr_merge_notification(self, pr_id: str, playbook_id: str, merged_by: str, pr_author_id: str) -> bool:
+        """Create a notification for when a pull request is merged"""
+        try:
+            print(f"🔔 Creating PR merge notification for PR {pr_id}, playbook {playbook_id}, merged_by {merged_by}, author {pr_author_id}")
+            
+            # Get merged by user details
+            merged_by_user = await self.get_user_by_id(merged_by)
+            if not merged_by_user:
+                print(f"❌ Could not find merged by user {merged_by}")
+                return False
+            
+            # Get playbook details
+            playbook = await self.get_playbook(playbook_id)
+            if not playbook:
+                print(f"❌ Could not find playbook {playbook_id}")
+                return False
+            
+            # Get PR details
+            pr_response = self.client.table("pull_requests").select("title").eq("id", pr_id).execute()
+            if not pr_response.data:
+                print(f"❌ Could not find pull request {pr_id}")
+                return False
+            
+            pr_title = pr_response.data[0].get('title', 'Unknown PR')
+            print(f"📝 PR title: {pr_title}")
+            
+            # Create notification data for PR author
+            notification_data = {
+                "recipient_id": pr_author_id,
+                "type": "pr_merged",
+                "title": "Pull Request Merged",
+                "message": f"Your pull request '{pr_title}' for '{playbook.get('title')}' has been merged by {merged_by_user.get('full_name', merged_by_user.get('email'))}",
+                "playbook_id": playbook_id,
+                "playbook_title": playbook.get('title', 'Unknown Playbook'),
+                "user_id": merged_by,
+                "user_email": merged_by_user.get('email', 'Unknown User'),
+                "user_full_name": merged_by_user.get('full_name', merged_by_user.get('email', 'Unknown User')),
+                "is_read": False
+            }
+            
+            print(f"📋 Notification data: {notification_data}")
+            
+            # Insert into notifications table
+            response = self.client.table("notifications").insert(notification_data).execute()
+            if response.data:
+                print(f"✅ Created PR merge notification: {response.data[0]['id']}")
+                return True
+            else:
+                print(f"❌ Failed to create PR merge notification - no data returned")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error creating PR merge notification: {str(e)}")
+            print(f"❌ Error type: {type(e)}")
+            import traceback
+            print(f"❌ Traceback: {traceback.format_exc()}")
+            return False
+
+    async def create_pr_decline_notification(self, pr_id: str, playbook_id: str, declined_by: str, pr_author_id: str) -> bool:
+        """Create a notification for when a pull request is declined"""
+        try:
+            print(f"🔔 Creating PR decline notification for PR {pr_id}, playbook {playbook_id}, declined_by {declined_by}, author {pr_author_id}")
+            
+            # Get declined by user details
+            declined_by_user = await self.get_user_by_id(declined_by)
+            if not declined_by_user:
+                print(f"❌ Could not find declined by user {declined_by}")
+                return False
+            
+            # Get playbook details
+            playbook = await self.get_playbook(playbook_id)
+            if not playbook:
+                print(f"❌ Could not find playbook {playbook_id}")
+                return False
+            
+            # Get PR details
+            pr_response = self.client.table("pull_requests").select("title").eq("id", pr_id).execute()
+            if not pr_response.data:
+                print(f"❌ Could not find pull request {pr_id}")
+                return False
+            
+            pr_title = pr_response.data[0].get('title', 'Unknown PR')
+            print(f"📝 PR title: {pr_title}")
+            
+            # Create notification data for PR author
+            notification_data = {
+                "recipient_id": pr_author_id,
+                "type": "pr_declined",
+                "title": "Pull Request Declined",
+                "message": f"Your pull request '{pr_title}' for '{playbook.get('title')}' has been declined by {declined_by_user.get('full_name', declined_by_user.get('email'))}",
+                "playbook_id": playbook_id,
+                "playbook_title": playbook.get('title', 'Unknown Playbook'),
+                "user_id": declined_by,
+                "user_email": declined_by_user.get('email', 'Unknown User'),
+                "user_full_name": declined_by_user.get('full_name', declined_by_user.get('email', 'Unknown User')),
+                "is_read": False
+            }
+            
+            print(f"📋 Notification data: {notification_data}")
+            
+            # Insert into notifications table
+            response = self.client.table("notifications").insert(notification_data).execute()
+            if response.data:
+                print(f"✅ Created PR decline notification: {response.data[0]['id']}")
+                return True
+            else:
+                print(f"❌ Failed to create PR decline notification - no data returned")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error creating PR decline notification: {str(e)}")
+            print(f"❌ Error type: {type(e)}")
+            import traceback
+            print(f"❌ Traceback: {traceback.format_exc()}")
+            return False
+
+    async def create_pr_close_notification(self, pr_id: str, playbook_id: str, closed_by: str, pr_author_id: str) -> bool:
+        """Create a notification for when a pull request is closed"""
+        try:
+            # Get closed by user details
+            closed_by_user = await self.get_user_by_id(closed_by)
+            if not closed_by_user:
+                print(f"Could not find closed by user {closed_by}")
+                return False
+            
+            # Get playbook details
+            playbook = await self.get_playbook(playbook_id)
+            if not playbook:
+                print(f"Could not find playbook {playbook_id}")
+                return False
+            
+            # Get PR details
+            pr_response = self.client.table("pull_requests").select("title").eq("id", pr_id).execute()
+            if not pr_response.data:
+                print(f"Could not find pull request {pr_id}")
+                return False
+            
+            pr_title = pr_response.data[0].get('title', 'Unknown PR')
+            
+            # Create notification data for PR author (if closed by someone else)
+            if closed_by != pr_author_id:
+                notification_data = {
+                    "recipient_id": pr_author_id,
+                    "type": "pr_closed",
+                    "title": "Pull Request Closed",
+                    "message": f"Your pull request '{pr_title}' for '{playbook.get('title')}' has been closed by {closed_by_user.get('full_name', closed_by_user.get('email'))}",
+                    "playbook_id": playbook_id,
+                    "playbook_title": playbook.get('title', 'Unknown Playbook'),
+                    "user_id": closed_by,
+                    "user_email": closed_by_user.get('email', 'Unknown User'),
+                    "user_full_name": closed_by_user.get('full_name', closed_by_user.get('email', 'Unknown User')),
+                    "is_read": False
+                }
+                
+                # Insert into notifications table
+                response = self.client.table("notifications").insert(notification_data).execute()
+                if response.data:
+                    print(f"✅ Created PR close notification: {response.data[0]['id']}")
+                    return True
+            
+            return True  # Return True even if no notification was created (when author closes their own PR)
+        except Exception as e:
+            print(f"Error creating PR close notification: {str(e)}")
+            return False
+
+    async def create_pr_created_notification(self, pr_id: str, playbook_id: str, pr_author_id: str) -> bool:
+        """Create a notification for when a new pull request is created"""
+        try:
+            print(f"🔔 Creating PR created notification for PR {pr_id}, playbook {playbook_id}, author {pr_author_id}")
+            
+            # Get PR author details
+            pr_author = await self.get_user_by_id(pr_author_id)
+            if not pr_author:
+                print(f"❌ Could not find PR author {pr_author_id}")
+                return False
+            
+            # Get playbook details
+            playbook = await self.get_playbook(playbook_id)
+            if not playbook:
+                print(f"❌ Could not find playbook {playbook_id}")
+                return False
+            
+            # Get PR details
+            pr_response = self.client.table("pull_requests").select("title").eq("id", pr_id).execute()
+            if not pr_response.data:
+                print(f"❌ Could not find pull request {pr_id}")
+                return False
+            
+            pr_title = pr_response.data[0].get('title', 'Unknown PR')
+            print(f"📝 PR title: {pr_title}")
+            
+            # Get playbook owner
+            playbook_owner_id = playbook.get('owner_id')
+            if not playbook_owner_id:
+                print(f"❌ Could not find playbook owner")
+                return False
+            
+            print(f"👤 Playbook owner: {playbook_owner_id}, PR author: {pr_author_id}")
+            
+            # Don't notify if PR author is the playbook owner
+            if pr_author_id == playbook_owner_id:
+                print(f"ℹ️ PR author is playbook owner, skipping notification")
+                return True
+            
+            # Create notification data for playbook owner
+            notification_data = {
+                "recipient_id": playbook_owner_id,
+                "type": "pr_created",
+                "title": "New Pull Request",
+                "message": f"{pr_author.get('full_name', pr_author.get('email'))} created a pull request '{pr_title}' for your playbook '{playbook.get('title')}'",
+                "playbook_id": playbook_id,
+                "playbook_title": playbook.get('title', 'Unknown Playbook'),
+                "user_id": pr_author_id,
+                "user_email": pr_author.get('email', 'Unknown User'),
+                "user_full_name": pr_author.get('full_name', pr_author.get('email', 'Unknown User')),
+                "is_read": False
+            }
+            
+            print(f"📋 Notification data: {notification_data}")
+            
+            # Insert into notifications table
+            response = self.client.table("notifications").insert(notification_data).execute()
+            if response.data:
+                print(f"✅ Created PR created notification: {response.data[0]['id']}")
+                return True
+            else:
+                print(f"❌ Failed to create PR created notification - no data returned")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error creating PR created notification: {str(e)}")
+            print(f"❌ Error type: {type(e)}")
+            import traceback
+            print(f"❌ Traceback: {traceback.format_exc()}")
+            return False
+
     async def mark_notifications_read(self, user_id: str, notification_ids: List[str]) -> int:
         """Mark specific notifications as read"""
         try:

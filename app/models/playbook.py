@@ -113,9 +113,9 @@ class PlaybookDetailedResponse(BaseModel):
 
 
 class NotificationResponse(BaseModel):
-    """Notification response for fork events"""
+    """Notification response for fork events and PR events"""
     id: str
-    type: str  # "fork", "update", etc.
+    type: str  # "fork", "pr_merged", "pr_declined", "pr_closed", etc.
     title: str
     message: str
     playbook_id: str
@@ -124,6 +124,7 @@ class NotificationResponse(BaseModel):
     user_email: str
     user_full_name: str
     fork_id: Optional[str] = None
+    pr_id: Optional[str] = None
     is_read: bool = False
     read_at: Optional[datetime] = None
     created_at: datetime
